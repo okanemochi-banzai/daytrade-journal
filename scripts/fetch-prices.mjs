@@ -7,9 +7,8 @@ import path from 'node:path';
 
 const DATA_DIR = 'data';
 const PRICES_DIR = 'data/prices';
-const REQUEST_DELAY_MS = 1500; // Be gentle with Yahoo
+const REQUEST_DELAY_MS = 1500;
 
-// ── Helpers ──────────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function decode(buffer) {
@@ -17,7 +16,7 @@ function decode(buffer) {
     try {
       const decoder = new TextDecoder(enc, { fatal: false });
       const text = decoder.decode(buffer);
-      if (text.includes('約定日') && text.includes('銘柄')) return text;
+      if (text.includes('銘柄') && (text.includes('決済日') || text.includes('約定日'))) return text;
     } catch (e) {}
   }
   throw new Error('Cannot decode CSV');
@@ -40,13 +39,21 @@ async function extractTickers(csvPath) {
   const buf = await fs.readFile(csvPath);
   const text = decode(buf);
   const lines = text.split(/\r?\n/);
-  const headerIdx = lines.findIndex(l => l.startsWith('約定日'));
+
+  const isCloseDetail = text.includes('信用決済明細') || lines.some(l => l.startsWith('決済日'));
+  let headerIdx;
+  if (isCloseDetail) {
+    headerIdx = lines.findIndex(l => l.startsWith('決済日'));
+  } else {
+    headerIdx = lines.findIndex(l => l.startsWith('約定日'));
+  }
   if (headerIdx < 0) return [];
+
   const dataLines = lines.slice(headerIdx + 1).filter(l => l.trim() && l.includes('"'));
   const tickers = new Set();
   for (const line of dataLines) {
     const fields = parseCsvLine(line);
-    const code = fields[2]; // 銘柄コード is the 3rd field
+    let code = (fields[2] || '').trim();
     if (code && /^\d{4,5}$/.test(code)) tickers.add(code);
   }
   return [...tickers];
@@ -68,11 +75,8 @@ async function listTradeCsvs() {
     }));
 }
 
-// ── Yahoo Finance ────────────────────────────────────────────────
 function dateRangeForFetch(dateStr) {
-  // 3日前のJST 00:00 UTC〜翌日のJST 00:00 UTC をカバー（BB warmup用）
   const [y, m, d] = dateStr.split('-').map(Number);
-  // JST 00:00 = previous day 15:00 UTC
   const dayMid = Date.UTC(y, m - 1, d);
   const period1 = Math.floor((dayMid - 4 * 86400 * 1000) / 1000);
   const period2 = Math.floor((dayMid + 1.5 * 86400 * 1000) / 1000);
@@ -118,7 +122,6 @@ async function fetchYahoo(code, dateStr) {
   };
 }
 
-// ── Main ─────────────────────────────────────────────────────────
 async function main() {
   const csvs = await listTradeCsvs();
   console.log(`📂 Found ${csvs.length} CSV file(s)`);
@@ -147,7 +150,6 @@ async function main() {
 
     for (const code of tickers) {
       const outPath = path.join(dateDir, `${code}.json`);
-      // Skip if already cached
       try {
         await fs.access(outPath);
         console.log(`  ✓ ${code}: cached`);
@@ -159,7 +161,6 @@ async function main() {
         const data = await fetchYahoo(code, csv.date);
         const dayCandles = data.candles.filter(c => {
           const d = new Date(c.t * 1000);
-          // JST date check (UTC+9): convert to JST and check date
           const jst = new Date(d.getTime() + 9 * 3600 * 1000);
           return jst.toISOString().slice(0, 10) === csv.date;
         });
@@ -176,7 +177,7 @@ async function main() {
           currency: data.currency,
           source: 'yahoo',
           fetchedAt: new Date().toISOString(),
-          candles: data.candles, // Save ALL candles including warmup
+          candles: data.candles,
         }, null, 0));
         console.log(`  ✓ ${code}: ${dayCandles.length} day-candles, ${data.candles.length} total`);
         totalNew++;
