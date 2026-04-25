@@ -1,0 +1,15 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Node (for future use)
+node_modules/
+.npm
+
+# Original SBI download files (rename them to YYYY-MM-DD.csv)
+SaveFile_*.csv
+data/SaveFile_*.csv
