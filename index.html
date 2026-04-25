@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daytrade Journal</title>
+<style>
+  :root {
+    --bg: #080d18;
+    --surface: rgba(255,255,255,0.03);
+    --surface-hover: rgba(255,255,255,0.06);
+    --border: #1a2235;
+    --text: #e2e8f0;
+    --muted: #475569;
+    --dim: #334155;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #facc15;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+    min-height: 100vh;
+  }
+  .container { max-width: 720px; margin: 0 auto; padding: 14px; }
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+  }
+  .title-line { font-size: 9px; color: var(--dim); letter-spacing: 3px; margin-bottom: 4px; }
+  .title { font-size: 22px; font-weight: bold; margin: 0; }
+  .subtitle { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .summary-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .summary-card .lbl { font-size: 9px; color: var(--muted); margin-bottom: 4px; }
+  .summary-card .val { font-size: 20px; font-weight: bold; font-family: monospace; line-height: 1; }
+  .summary-card .sub { font-size: 9px; color: var(--dim); margin-top: 4px; }
+
+  .section-title {
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 2px;
+    margin: 18px 0 8px;
+    text-transform: uppercase;
+  }
+
+  .cumulative-chart {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    height: 180px;
+    margin-bottom: 16px;
+  }
+  .chart-svg { width: 100%; height: 100%; display: block; }
+  .grid-line { stroke: rgba(255,255,255,0.05); stroke-dasharray: 2 4; }
+  .axis-label { fill: var(--dim); font-size: 9px; font-family: monospace; }
+  .zero-line { stroke: var(--dim); stroke-dasharray: 4 2; stroke-width: 0.5; }
+
+  .calendar-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 16px;
+  }
+  .calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .calendar-month { font-size: 14px; font-weight: bold; }
+  .calendar-nav { display: flex; gap: 6px; }
+  .calendar-nav button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 28px; height: 28px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .calendar-nav button:hover { background: var(--surface-hover); }
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+  .cal-dow {
+    text-align: center;
+    font-size: 9px;
+    color: var(--muted);
+    padding: 4px 0;
+  }
+  .cal-dow.sun { color: #f87171; }
+  .cal-dow.sat { color: #60a5fa; }
+  .cal-cell {
+    aspect-ratio: 1;
+    border-radius: 4px;
+    padding: 3px 4px;
+    font-size: 10px;
+    color: var(--dim);
+    background: rgba(255,255,255,0.01);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    border: 1px solid transparent;
+  }
+  .cal-cell.empty { background: transparent; }
+  .cal-cell .day { font-weight: bold; font-size: 11px; }
+  .cal-cell.has-data {
+    cursor: pointer;
+    border-color: var(--border);
+  }
+  .cal-cell.has-data:hover { background: var(--surface-hover); }
+  .cal-cell.profit { background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.3); }
+  .cal-cell.profit .day { color: var(--green); }
+  .cal-cell.loss { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); }
+  .cal-cell.loss .day { color: var(--red); }
+  .cal-cell.today { box-shadow: 0 0 0 1px var(--blue); }
+  .cal-pnl {
+    font-size: 8px;
+    font-family: monospace;
+    text-align: right;
+  }
+  .cal-pnl.profit { color: var(--green); }
+  .cal-pnl.loss { color: var(--red); }
+
+  .day-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+  .day-row {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    text-decoration: none;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .day-row:hover { background: var(--surface-hover); }
+  .day-row .left { display: flex; flex-direction: column; gap: 2px; }
+  .day-row .date-str { font-size: 12px; font-weight: bold; }
+  .day-row .meta { font-size: 9px; color: var(--muted); }
+  .day-row .right { text-align: right; }
+  .day-row .pnl-amount { font-size: 14px; font-weight: bold; font-family: monospace; }
+  .day-row .arrow { color: var(--dim); margin-left: 8px; }
+
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+  }
+  .empty-state h2 { font-size: 16px; margin: 0 0 8px; color: var(--text); }
+  .empty-state p { font-size: 12px; line-height: 1.6; margin: 4px 0; }
+  .empty-state code {
+    background: var(--surface);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 11px;
+  }
+
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+
+  .footer {
+    text-align: center;
+    padding-top: 14px;
+    margin-top: 20px;
+    font-size: 10px;
+    color: var(--dim);
+    border-top: 1px solid var(--border);
+  }
+  .footer a { color: var(--muted); text-decoration: none; }
+
+  .loading {
+    text-align: center;
+    padding: 30px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="title-line">DAYTRADE JOURNAL</div>
+    <h1 class="title">📊 振り返り</h1>
+    <div class="subtitle" id="subtitle">読込中…</div>
+  </div>
+
+  <div id="app">
+    <div class="loading"><span class="spinner"></span>データを取得中…</div>
+  </div>
+
+  <div class="footer">
+    <a href="day.html">単日ビュー</a> · <a href="https://github.com/" target="_blank">GitHub</a>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// CSV Parser - supports both 信用決済明細 and 約定履歴照会
+// ═══════════════════════════════════════════════════════════════════
+function parseCsvLine(line) {
+  const fields = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') inQ = !inQ;
+    else if (c === ',' && !inQ) { fields.push(cur); cur = ''; }
+    else cur += c;
+  }
+  fields.push(cur);
+  return fields.map(f => f.trim());
+}
+
+async function parseSBICsv(buffer) {
+  const encodings = ['utf-8', 'shift-jis', 'euc-jp'];
+  let text = null;
+  for (const enc of encodings) {
+    try {
+      const decoder = new TextDecoder(enc, { fatal: false });
+      const decoded = decoder.decode(buffer);
+      if (decoded.includes('銘柄') && (decoded.includes('決済日') || decoded.includes('約定日'))) {
+        text = decoded;
+        break;
+      }
+    } catch (e) {}
+  }
+  if (!text) throw new Error('Encoding decode failed');
+
+  const lines = text.split(/\r?\n/);
+  const isCloseDetail = text.includes('信用決済明細') || lines.some(l => l.startsWith('決済日'));
+
+  if (isCloseDetail) {
+    // 信用決済明細 format - one round-trip per line
+    const headerIdx = lines.findIndex(l => l.startsWith('決済日'));
+    if (headerIdx < 0) throw new Error('Header (決済日) not found');
+    const dataLines = lines.slice(headerIdx + 1).filter(l => l.trim() && l.includes('"'));
+    const trades = [];
+    dataLines.forEach((line, idx) => {
+      const f = parseCsvLine(line).map(x => x.replace(/^"|"$/g, ''));
+      if (f.length < 28) return;
+      const [date, name, code] = f;
+      const buySellOpen = f[10];
+      const qty = f[11], openPrice = f[12], closePrice = f[13];
+      const pnl = parseFloat(f[27].replace(/[+,]/g, ''));
+      const isLong = buySellOpen.includes('買');
+      trades.push({
+        idx: idx * 2,
+        date: date.replace(/\//g, '-'),
+        name: name.trim(),
+        code: code.trim(),
+        qty: parseInt(qty, 10),
+        price: parseFloat(openPrice),
+        pnl: null,
+      });
+      trades.push({
+        idx: idx * 2 + 1,
+        date: date.replace(/\//g, '-'),
+        name: name.trim(),
+        code: code.trim(),
+        qty: parseInt(qty, 10),
+        price: parseFloat(closePrice),
+        pnl: isNaN(pnl) ? null : pnl,
+      });
+    });
+    return trades;
+  } else {
+    // 約定履歴照会 format - legacy
+    const headerIdx = lines.findIndex(l => l.startsWith('約定日'));
+    if (headerIdx < 0) throw new Error('Header not found');
+    const dataLines = lines.slice(headerIdx + 1).filter(l => l.trim() && l.includes('"'));
+    return dataLines.map((line, idx) => {
+      const fields = parseCsvLine(line).map(f => f.replace(/^"|"$/g, ''));
+      const [date, name, code, , action, , , , qty, price, , , , pnl] = fields;
+      return {
+        idx,
+        date: date.replace(/\//g, '-'),
+        name, code, action,
+        qty: parseInt(qty, 10),
+        price: parseFloat(price),
+        pnl: pnl === '--' ? null : parseFloat(pnl),
+      };
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Repository auto-detection from URL
+// ═══════════════════════════════════════════════════════════════════
+function detectRepo() {
+  const host = location.hostname;
+  const pathParts = location.pathname.split('/').filter(Boolean);
+  if (host.endsWith('.github.io')) {
+    const owner = host.split('.')[0];
+    const repo = pathParts[0] && !pathParts[0].endsWith('.html') ? pathParts[0] : `${owner}.github.io`;
+    return { owner, repo };
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Fetch with timeout helper
+// ═══════════════════════════════════════════════════════════════════
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    return res;
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') throw new Error(`タイムアウト（${timeoutMs/1000}秒）: ${url}`);
+    throw e;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Fetch list of CSVs from data/ via GitHub API
+// ═══════════════════════════════════════════════════════════════════
+async function fetchDataDirectory(repo) {
+  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/contents/data`;
+  console.log('[journal] Fetching:', url);
+  const res = await fetchWithTimeout(url, {}, 8000);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error(`data/ フォルダが見つかりません（${repo.owner}/${repo.repo}）`);
+    if (res.status === 403) throw new Error('GitHub APIのレート制限です（しばらく待ってください）');
+    throw new Error(`GitHub API: HTTP ${res.status}`);
+  }
+  const files = await res.json();
+  return files
+    .filter(f => f.type === 'file' && /^\d{4}-\d{2}-\d{2}\.csv$/.test(f.name))
+    .map(f => ({
+      date: f.name.replace('.csv', ''),
+      name: f.name,
+      url: f.download_url,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Fallback: directly probe data/ folder for recent dates
+// ═══════════════════════════════════════════════════════════════════
+async function probeRecentDates(daysBack = 90) {
+  const found = [];
+  const today = new Date();
+  const promises = [];
+  for (let i = 0; i < daysBack; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const dow = d.getDay();
+    if (dow === 0 || dow === 6) continue; // skip weekends
+    const dateStr = d.toISOString().slice(0, 10);
+    const url = `data/${dateStr}.csv`;
+    promises.push(
+      fetch(url, { method: 'HEAD' })
+        .then(res => res.ok ? { date: dateStr, name: `${dateStr}.csv`, url } : null)
+        .catch(() => null)
+    );
+  }
+  const results = await Promise.all(promises);
+  return results.filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Process a single day's CSV → summary
+// ═══════════════════════════════════════════════════════════════════
+async function processDayCsv(file) {
+  try {
+    const res = await fetch(file.url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    const trades = await parseSBICsv(buf);
+    const closing = trades.filter(t => t.pnl !== null);
+    const totalPnL = closing.reduce((s, t) => s + t.pnl, 0);
+    const wins = closing.filter(t => t.pnl > 0).length;
+    return {
+      date: file.date,
+      totalPnL,
+      tradeCount: trades.length,
+      closingCount: closing.length,
+      wins,
+      symbols: [...new Set(trades.map(t => t.name))],
+    };
+  } catch (e) {
+    return { date: file.date, error: e.message, totalPnL: 0, tradeCount: 0, closingCount: 0, wins: 0, symbols: [] };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Cumulative P&L line chart
+// ═══════════════════════════════════════════════════════════════════
+function renderCumulativeChart(dayData) {
+  if (dayData.length === 0) return '<div style="color:var(--muted); text-align:center; padding:50px 0; font-size:11px;">データなし</div>';
+
+  let cum = 0;
+  const points = dayData.map(d => {
+    cum += d.totalPnL;
+    return { date: d.date, val: cum };
+  });
+  if (points.length === 1) {
+    points.unshift({ date: 'start', val: 0 });
+  }
+
+  const W = 680, H = 160;
+  const padL = 50, padR = 12, padT = 12, padB = 26;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const vals = points.map(p => p.val);
+  const minV = Math.min(0, ...vals);
+  const maxV = Math.max(0, ...vals);
+  const range = (maxV - minV) || 1;
+  const padR_v = range * 0.15;
+  const yMin = minV - padR_v;
+  const yMax = maxV + padR_v;
+
+  const xPos = i => padL + (points.length === 1 ? innerW/2 : (i / (points.length - 1)) * innerW);
+  const yPos = v => padT + innerH - ((v - yMin) / (yMax - yMin)) * innerH;
+
+  let path = '';
+  let area = '';
+  points.forEach((p, i) => {
+    const x = xPos(i), y = yPos(p.val);
+    path += (i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`);
+    if (i === 0) area = `M ${x} ${yPos(0)} L ${x} ${y}`;
+    else area += ` L ${x} ${y}`;
+  });
+  area += ` L ${xPos(points.length-1)} ${yPos(0)} Z`;
+
+  const finalVal = points[points.length-1].val;
+  const stroke = finalVal >= 0 ? '#22c55e' : '#ef4444';
+  const fill = finalVal >= 0 ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)';
+
+  const yTicks = [];
+  for (let k = 0; k < 4; k++) {
+    yTicks.push(yMin + (yMax - yMin) * (k / 3));
+  }
+
+  const xLabels = [];
+  if (points.length >= 2) {
+    xLabels.push({ idx: 0, text: points[0].date === 'start' ? '' : points[0].date.slice(5) });
+    if (points.length > 4) {
+      const midIdx = Math.floor(points.length / 2);
+      xLabels.push({ idx: midIdx, text: points[midIdx].date.slice(5) });
+    }
+    xLabels.push({ idx: points.length - 1, text: points[points.length-1].date.slice(5) });
+  }
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="none">
+      ${yTicks.map(v => `
+        <line x1="${padL}" y1="${yPos(v)}" x2="${W-padR}" y2="${yPos(v)}" class="grid-line"/>
+        <text x="${padL - 6}" y="${yPos(v) + 3}" class="axis-label" text-anchor="end">${Math.round(v).toLocaleString()}</text>
+      `).join('')}
+      <line x1="${padL}" y1="${yPos(0)}" x2="${W-padR}" y2="${yPos(0)}" class="zero-line"/>
+      <path d="${area}" fill="${fill}"/>
+      <path d="${path}" stroke="${stroke}" stroke-width="2" fill="none"/>
+      ${xLabels.filter(l => l.text).map(l => `
+        <text x="${xPos(l.idx)}" y="${H - 8}" class="axis-label" text-anchor="middle">${l.text}</text>
+      `).join('')}
+      ${points.map((p, i) => p.date === 'start' ? '' : `
+        <circle cx="${xPos(i)}" cy="${yPos(p.val)}" r="3" fill="${p.val >= 0 ? '#22c55e' : '#ef4444'}" stroke="#080d18" stroke-width="1.5"/>
+      `).join('')}
+    </svg>
+  `;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Calendar
+// ═══════════════════════════════════════════════════════════════════
+function renderCalendar(dayData, year, month) {
+  const dataMap = new Map(dayData.map(d => [d.date, d]));
+  const firstDay = new Date(year, month - 1, 1);
+  const lastDay = new Date(year, month, 0);
+  const daysInMonth = lastDay.getDate();
+  const startDow = firstDay.getDay();
+
+  const today = new Date().toISOString().slice(0, 10);
+  const cells = [];
+  for (let i = 0; i < startDow; i++) cells.push({ empty: true });
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    cells.push({ day: d, dateStr, data: dataMap.get(dateStr), isToday: dateStr === today });
+  }
+  while (cells.length % 7 !== 0) cells.push({ empty: true });
+
+  return cells.map(c => {
+    if (c.empty) return '<div class="cal-cell empty"></div>';
+    let cls = 'cal-cell';
+    if (c.data) {
+      cls += ' has-data';
+      cls += c.data.totalPnL >= 0 ? ' profit' : ' loss';
+    }
+    if (c.isToday) cls += ' today';
+    const onclick = c.data ? `onclick="goToDay('${c.dateStr}')"` : '';
+    let pnlText = '';
+    if (c.data) {
+      const v = c.data.totalPnL;
+      const display = Math.abs(v) >= 10000 ? `${v >= 0 ? '+' : '−'}${Math.round(Math.abs(v)/1000)}k` : `${v >= 0 ? '+' : '−'}${(Math.abs(v)/1000).toFixed(1)}k`;
+      pnlText = `<div class="cal-pnl ${v >= 0 ? 'profit' : 'loss'}">${display}</div>`;
+    }
+    return `<div class="${cls}" ${onclick}><div class="day">${c.day}</div>${pnlText}</div>`;
+  }).join('');
+}
+
+let currentMonth = null;
+let allDayData = [];
+
+function changeMonth(delta) {
+  currentMonth.setMonth(currentMonth.getMonth() + delta);
+  renderApp();
+}
+
+function goToDay(date) {
+  location.href = `day.html?date=${date}`;
+}
+
+window.goToDay = goToDay;
+window.changeMonth = changeMonth;
+
+function renderApp() {
+  const app = document.getElementById('app');
+  if (allDayData.length === 0) {
+    app.innerHTML = `
+      <div class="empty-state">
+        <h2>📂 まだデータがありません</h2>
+        <p>SBI証券の約定履歴CSVを <code>data/YYYY-MM-DD.csv</code> という名前でリポジトリに配置すると、自動で読み込まれます。</p>
+        <p style="margin-top:14px"><a href="day.html" style="color:var(--blue)">→ 単日ビューを開く</a></p>
+      </div>`;
+    return;
+  }
+
+  const totalPnL = allDayData.reduce((s, d) => s + d.totalPnL, 0);
+  const winDays = allDayData.filter(d => d.totalPnL > 0).length;
+  const tradingDays = allDayData.length;
+  const dayWinRate = tradingDays ? (winDays / tradingDays * 100) : 0;
+
+  const year = currentMonth.getFullYear();
+  const month = currentMonth.getMonth() + 1;
+  const recentDays = [...allDayData].reverse().slice(0, 5);
+
+  const fmtPnL = n => `${n >= 0 ? '+' : ''}${Math.round(n).toLocaleString()}`;
+  const dayOfWeek = ['日','月','火','水','木','金','土'];
+
+  app.innerHTML = `
+    <div class="summary-grid">
+      <div class="summary-card">
+        <div class="lbl">累計損益</div>
+        <div class="val ${totalPnL >= 0 ? 'green' : 'red'}">${fmtPnL(totalPnL)}<span style="font-size:11px">円</span></div>
+        <div class="sub">${tradingDays}日間</div>
+      </div>
+      <div class="summary-card">
+        <div class="lbl">勝ち日</div>
+        <div class="val">${winDays}<span style="font-size:11px; color:var(--muted)"> / ${tradingDays}</span></div>
+        <div class="sub">勝率 ${dayWinRate.toFixed(0)}%</div>
+      </div>
+      <div class="summary-card">
+        <div class="lbl">平均損益</div>
+        <div class="val ${totalPnL >= 0 ? 'green' : 'red'}">${tradingDays ? fmtPnL(totalPnL/tradingDays) : '--'}</div>
+        <div class="sub">円/日</div>
+      </div>
+    </div>
+
+    <div class="section-title">累計損益推移</div>
+    <div class="cumulative-chart">${renderCumulativeChart(allDayData)}</div>
+
+    <div class="section-title">カレンダー</div>
+    <div class="calendar-section">
+      <div class="calendar-header">
+        <div class="calendar-month">${year}年 ${month}月</div>
+        <div class="calendar-nav">
+          <button onclick="changeMonth(-1)">‹</button>
+          <button onclick="changeMonth(1)">›</button>
+        </div>
+      </div>
+      <div class="calendar-grid">
+        <div class="cal-dow sun">日</div>
+        <div class="cal-dow">月</div>
+        <div class="cal-dow">火</div>
+        <div class="cal-dow">水</div>
+        <div class="cal-dow">木</div>
+        <div class="cal-dow">金</div>
+        <div class="cal-dow sat">土</div>
+        ${renderCalendar(allDayData, year, month)}
+      </div>
+    </div>
+
+    <div class="section-title">最近の取引日</div>
+    <div class="day-list">
+      ${recentDays.map(d => {
+        const dt = new Date(d.date + 'T00:00:00');
+        const dow = dayOfWeek[dt.getDay()];
+        return `
+          <div class="day-row" onclick="goToDay('${d.date}')">
+            <div class="left">
+              <div class="date-str">${d.date} (${dow})</div>
+              <div class="meta">${d.tradeCount}注文 ／ ${d.symbols.slice(0,2).join('・')}${d.symbols.length > 2 ? '他' : ''}</div>
+            </div>
+            <div class="right">
+              <span class="pnl-amount ${d.totalPnL >= 0 ? 'green' : 'red'}">${fmtPnL(d.totalPnL)}円</span>
+              <span class="arrow">→</span>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+async function boot() {
+  const subtitle = document.getElementById('subtitle');
+  const repo = detectRepo();
+
+  console.log('[journal] Detected repo:', repo);
+  console.log('[journal] Location:', location.href);
+
+  let files = [];
+  let mode = '';
+
+  // Try GitHub API first
+  if (repo) {
+    subtitle.textContent = `${repo.owner}/${repo.repo}`;
+    try {
+      files = await fetchDataDirectory(repo);
+      mode = 'GitHub API';
+      console.log('[journal] GitHub API returned', files.length, 'files');
+    } catch (err) {
+      console.warn('[journal] GitHub API failed:', err.message);
+      subtitle.textContent = `${repo.owner}/${repo.repo} (API失敗→直接取得モード)`;
+    }
+  } else {
+    subtitle.textContent = 'ローカル/直接取得モード';
+  }
+
+  // Fallback: probe directly
+  if (files.length === 0) {
+    try {
+      console.log('[journal] Probing data/ directly...');
+      files = await probeRecentDates();
+      mode = '直接取得（過去90日分）';
+      console.log('[journal] Direct probe found', files.length, 'files');
+    } catch (err) {
+      console.error('[journal] Direct probe failed:', err);
+    }
+  }
+
+  if (files.length === 0) {
+    allDayData = [];
+    currentMonth = new Date();
+    renderApp();
+    return;
+  }
+
+  // Process all CSVs in parallel
+  try {
+    const results = await Promise.all(files.map(processDayCsv));
+    allDayData = results.filter(r => !r.error);
+    console.log('[journal] Processed', allDayData.length, 'days');
+
+    const latest = allDayData[allDayData.length - 1];
+    currentMonth = latest ? new Date(latest.date + 'T00:00:00') : new Date();
+    renderApp();
+
+    if (mode) {
+      subtitle.textContent = `${repo ? repo.owner + '/' + repo.repo + ' ／ ' : ''}${mode} ／ ${allDayData.length}日`;
+    }
+  } catch (err) {
+    document.getElementById('app').innerHTML = `
+      <div class="empty-state">
+        <h2>⚠️ エラー</h2>
+        <p>${err.message}</p>
+        <p style="margin-top:14px"><a href="day.html" style="color:var(--blue)">→ 単日ビューを開く</a></p>
+      </div>`;
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
