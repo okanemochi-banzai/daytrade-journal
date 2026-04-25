@@ -193,9 +193,24 @@
 // CSV Parser (SBI Securities format, Shift-JIS encoded)
 // ═══════════════════════════════════════════════════════════════════
 async function parseSBICsv(buffer) {
-  // SBI's CSV is Shift-JIS encoded
-  const decoder = new TextDecoder('shift-jis');
-  const text = decoder.decode(buffer);
+  // Try multiple encodings (SBI's original is Shift-JIS, but GitHub may convert to UTF-8)
+  const encodings = ['utf-8', 'shift-jis', 'euc-jp'];
+  let text = null, usedEnc = null;
+  for (const enc of encodings) {
+    try {
+      const decoder = new TextDecoder(enc, { fatal: false });
+      const decoded = decoder.decode(buffer);
+      // Validate by looking for expected header
+      if (decoded.includes('約定日') && decoded.includes('銘柄')) {
+        text = decoded;
+        usedEnc = enc;
+        break;
+      }
+    } catch (e) { /* try next */ }
+  }
+  if (!text) throw new Error('CSVのエンコーディングを判別できませんでした');
+  console.log(`CSV decoded as ${usedEnc}`);
+
   const lines = text.split(/\r?\n/);
 
   // Find the header row that starts with 約定日
