@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monthly Review</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { margin: 0; background: #080d18; font-family: 'Hiragino Sans','Noto Sans JP',sans-serif; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-up { animation: fadeUp 0.5s ease-out backwards; }
+</style>
+</head>
+<body>
+<div id="root"><div style="color:#64748b;text-align:center;padding:80px 16px;font-family:'Hiragino Sans',sans-serif;">読み込み中...</div></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// CSV parser (same as day.html)
+function parseDecisionCSV(text) {
+  const lines = text.split(/\r?\n/);
+  let headerIdx = lines.findIndex(l => l.startsWith('決済日'));
+  if (headerIdx < 0) return [];
+  const trades = [];
+  const tripCounter = {};
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('（')) continue;
+    const cols = [];
+    let cur = '', inQuote = false;
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j];
+      if (ch === '"') { inQuote = !inQuote; }
+      else if (ch === ',' && !inQuote) { cols.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    cols.push(cur);
+    if (cols.length < 28) continue;
+    
+    const code = cols[2].trim();
+    const name = cols[1].trim();
+    const side = cols[10].trim();
+    const qty = parseInt(cols[11].replace(/,/g, ''));
+    const openPrice = parseFloat(cols[12].replace(/,/g, ''));
+    const closePrice = parseFloat(cols[13].replace(/,/g, ''));
+    const pnl = parseFloat(cols[27].replace(/,/g, '').replace(/\+/g, ''));
+    
+    if (isNaN(openPrice) || isNaN(closePrice) || isNaN(qty)) continue;
+    
+    tripCounter[code] = (tripCounter[code] || 0) + 1;
+    trades.push({
+      tripId: tripCounter[code] - 1, code, name, qty,
+      direction: side.includes('売建') ? 'short' : 'long',
+      openPrice, closePrice, pnl,
+    });
+  }
+  return trades;
+}
+
+function fmtPnL(n) {
+  if (n == null) return '--';
+  return (n >= 0 ? '+' : '') + Math.round(n).toLocaleString();
+}
+
+function App() {
+  const [ym, setYm] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('ym') || new Date().toISOString().slice(0, 7);
+  });
+  const [dailyData, setDailyData] = useState({});
+  const [loading, setLoading] = useState(true);
+  
+  // Parse year-month
+  const [year, month] = ym.split('-').map(Number);
+  
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const daysInMonth = new Date(year, month, 0).getDate();
+      const results = {};
+      
+      // Try to fetch each day's CSV in parallel
+      const promises = [];
+      for (let d = 1; d <= daysInMonth; d++) {
+        const date = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        promises.push(
+          fetch(`data/${date}.csv`)
+            .then(r => r.ok ? r.arrayBuffer() : null)
+            .then(buf => {
+              if (!buf) return [date, null];
+              let text;
+              try {
+                text = new TextDecoder('shift_jis').decode(buf);
+                if (!text.includes('決済日') && !text.includes('信用')) {
+                  text = new TextDecoder('utf-8').decode(buf);
+                }
+              } catch {
+                text = new TextDecoder('utf-8').decode(buf);
+              }
+              return [date, parseDecisionCSV(text)];
+            })
+            .catch(() => [date, null])
+        );
+      }
+      
+      const settled = await Promise.all(promises);
+      settled.forEach(([date, trades]) => {
+        if (trades && trades.length > 0) {
+          results[date] = {
+            trades,
+            totalPnL: trades.reduce((s, t) => s + t.pnl, 0),
+            tradeCount: trades.length,
+            wins: trades.filter(t => t.pnl > 0).length,
+            losses: trades.filter(t => t.pnl < 0).length,
+          };
+        }
+      });
+      
+      setDailyData(results);
+      setLoading(false);
+    }
+    load();
+  }, [year, month]);
+  
+  // Calc monthly stats
+  const stats = useMemo(() => {
+    const days = Object.values(dailyData);
+    if (days.length === 0) return null;
+    
+    const totalPnL = days.reduce((s, d) => s + d.totalPnL, 0);
+    const totalTrades = days.reduce((s, d) => s + d.tradeCount, 0);
+    const totalWins = days.reduce((s, d) => s + d.wins, 0);
+    const totalLosses = days.reduce((s, d) => s + d.losses, 0);
+    const winningDays = days.filter(d => d.totalPnL > 0).length;
+    const losingDays = days.filter(d => d.totalPnL < 0).length;
+    const tradedDays = days.length;
+    
+    // Stock-level aggregation
+    const stockMap = {};
+    Object.entries(dailyData).forEach(([date, d]) => {
+      d.trades.forEach(t => {
+        if (!stockMap[t.code]) {
+          stockMap[t.code] = { code: t.code, name: t.name, pnl: 0, count: 0, dates: new Set() };
+        }
+        stockMap[t.code].pnl += t.pnl;
+        stockMap[t.code].count += 1;
+        stockMap[t.code].dates.add(date);
+      });
+    });
+    const stocks = Object.values(stockMap).sort((a, b) => b.pnl - a.pnl);
+    
+    // Cumulative P&L for chart
+    const sortedDates = Object.keys(dailyData).sort();
+    let cum = 0;
+    const cumulative = sortedDates.map(d => {
+      cum += dailyData[d].totalPnL;
+      return { date: d, daily: dailyData[d].totalPnL, cumulative: cum };
+    });
+    
+    return {
+      totalPnL, totalTrades, totalWins, totalLosses,
+      winningDays, losingDays, tradedDays,
+      winRate: totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0,
+      dayWinRate: tradedDays > 0 ? Math.round((winningDays / tradedDays) * 100) : 0,
+      avgDailyPnL: tradedDays > 0 ? totalPnL / tradedDays : 0,
+      stocks, cumulative,
+    };
+  }, [dailyData]);
+  
+  // Calendar grid
+  const calendarGrid = useMemo(() => {
+    const firstDay = new Date(year, month - 1, 1).getDay();
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const grid = [];
+    // Empty cells before day 1
+    for (let i = 0; i < firstDay; i++) grid.push(null);
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      grid.push({ day: d, date, data: dailyData[date] });
+    }
+    return grid;
+  }, [year, month, dailyData]);
+  
+  // Navigation
+  const prevMonth = () => {
+    const m = month - 1, y = m < 1 ? year - 1 : year;
+    const newYm = `${y}-${String(m < 1 ? 12 : m).padStart(2,'0')}`;
+    setYm(newYm);
+    window.history.replaceState({}, '', `?ym=${newYm}`);
+  };
+  const nextMonth = () => {
+    const m = month + 1, y = m > 12 ? year + 1 : year;
+    const newYm = `${y}-${String(m > 12 ? 1 : m).padStart(2,'0')}`;
+    setYm(newYm);
+    window.history.replaceState({}, '', `?ym=${newYm}`);
+  };
+  
+  if (loading) {
+    return <div style={{ color:'#64748b', textAlign:'center', padding:'80px 16px' }}>読み込み中... <br/><span style={{fontSize:10}}>{ym}</span></div>;
+  }
+
+  return (
+    <div style={{
+      background: 'radial-gradient(ellipse at top, #0f1729 0%, #080d18 60%)',
+      minHeight: '100vh',
+      padding: '20px 16px 60px',
+      color: '#e2e8f0',
+    }}>
+      <div style={{ maxWidth: 760, margin: '0 auto' }}>
+        <a href="./" style={{ display: 'inline-block', color: '#475569', textDecoration: 'none', fontSize: 11, marginBottom: 10 }}>← トップに戻る</a>
+
+        <div className="fade-up">
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            paddingBottom: 14, marginBottom: 20,
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+          }}>
+            <div style={{ display:'flex', alignItems:'center', gap: 10 }}>
+              <button onClick={prevMonth} style={{
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+                color: '#e2e8f0', borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+                fontSize: 14,
+              }}>‹</button>
+              <div>
+                <div style={{ fontSize: 9.5, color: '#475569', letterSpacing: 4, marginBottom: 4 }}>MONTHLY REVIEW</div>
+                <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.3 }}>{year}年{month}月</div>
+              </div>
+              <button onClick={nextMonth} style={{
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+                color: '#e2e8f0', borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+                fontSize: 14,
+              }}>›</button>
+            </div>
+            {stats && (
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 9.5, color: '#475569', marginBottom: 4 }}>月間損益</div>
+                <div style={{
+                  fontSize: 26, fontWeight: 800,
+                  color: stats.totalPnL >= 0 ? '#4ade80' : '#fb7185',
+                  fontFamily: 'ui-monospace, monospace', lineHeight: 1, letterSpacing: -0.5,
+                  textShadow: stats.totalPnL >= 0 ? '0 0 28px rgba(74,222,128,0.35)' : '0 0 28px rgba(251,113,133,0.35)',
+                }}>{fmtPnL(stats.totalPnL)}<span style={{ fontSize: 12, marginLeft: 3 }}>円</span></div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {!stats ? (
+          <div style={{ textAlign:'center', padding:'40px 16px', color:'#475569' }}>
+            この月の取引データがありません
+          </div>
+        ) : (
+          <>
+            {/* KPIs */}
+            <div className="fade-up" style={{ animationDelay: '0.08s', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 22 }}>
+              <KPI label="取引日数" value={`${stats.tradedDays}日`} sub={`勝${stats.winningDays}・負${stats.losingDays}`} />
+              <KPI label="日勝率" value={`${stats.dayWinRate}%`} sub="勝てた日の割合" tone="good" />
+              <KPI label="総取引" value={stats.totalTrades} sub={`勝${stats.totalWins}・負${stats.totalLosses}`} />
+              <KPI label="平均/日" value={fmtPnL(Math.round(stats.avgDailyPnL))} sub="円" tone={stats.avgDailyPnL >= 0 ? 'good' : 'bad'} />
+            </div>
+
+            {/* Calendar */}
+            <div className="fade-up" style={{ animationDelay: '0.15s', marginBottom: 22 }}>
+              <div style={{
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.005))',
+                border: '1px solid rgba(255,255,255,0.06)',
+                borderRadius: 14, padding: 14,
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 6 }}>
+                  {['日','月','火','水','木','金','土'].map((d, i) => (
+                    <div key={i} style={{
+                      fontSize: 10, color: i === 0 ? '#fb7185' : i === 6 ? '#60a5fa' : '#64748b',
+                      textAlign: 'center', padding: '4px 0', fontWeight: 600,
+                    }}>{d}</div>
+                  ))}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+                  {calendarGrid.map((cell, i) => {
+                    if (!cell) return <div key={i} />;
+                    const isWin = cell.data?.totalPnL > 0;
+                    const isLoss = cell.data?.totalPnL < 0;
+                    const bg = isWin ? 'rgba(74,222,128,0.1)' : isLoss ? 'rgba(251,113,133,0.1)' : 'rgba(255,255,255,0.02)';
+                    const borderColor = isWin ? 'rgba(74,222,128,0.25)' : isLoss ? 'rgba(251,113,133,0.25)' : 'rgba(255,255,255,0.04)';
+                    return (
+                      <a key={i} href={cell.data ? `day.html?date=${cell.date}` : null}
+                         style={{
+                           background: bg, border: `1px solid ${borderColor}`,
+                           borderRadius: 8, padding: '8px 6px',
+                           textDecoration: 'none', color: 'inherit',
+                           cursor: cell.data ? 'pointer' : 'default',
+                           opacity: cell.data ? 1 : 0.4,
+                           minHeight: 56, display:'flex', flexDirection:'column', justifyContent:'space-between',
+                           transition: 'transform 0.15s',
+                         }}>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>{cell.day}</div>
+                        {cell.data && (
+                          <div style={{
+                            fontSize: 11, fontWeight: 700,
+                            color: isWin ? '#4ade80' : '#fb7185',
+                            fontFamily: 'ui-monospace, monospace',
+                            lineHeight: 1.1,
+                          }}>{fmtPnL(cell.data.totalPnL)}</div>
+                        )}
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Cumulative chart */}
+            <CumulativeChart cumulative={stats.cumulative} />
+
+            {/* Stock breakdown */}
+            <div className="fade-up" style={{ animationDelay: '0.3s', marginBottom: 22 }}>
+              <div style={{
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.005))',
+                border: '1px solid rgba(255,255,255,0.06)',
+                borderRadius: 14, padding: 14,
+              }}>
+                <div style={{ fontSize: 10, color: '#475569', letterSpacing: 2, marginBottom: 10, fontWeight: 700 }}>
+                  📊 銘柄別損益
+                </div>
+                {stats.stocks.map((s, i) => (
+                  <div key={i} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '8px 0',
+                    borderTop: i > 0 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                  }}>
+                    <div>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</span>
+                      <span style={{ fontSize: 10, color: '#475569', marginLeft: 8 }}>
+                        {s.code} ／ {s.count}回 ／ {s.dates.size}日
+                      </span>
+                    </div>
+                    <span style={{ 
+                      fontSize: 14, fontWeight: 700, fontFamily:'ui-monospace, monospace',
+                      color: s.pnl >= 0 ? '#4ade80' : '#fb7185',
+                    }}>{fmtPnL(s.pnl)}円</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KPI({ label, value, sub, tone }) {
+  const color = tone === 'good' ? '#4ade80' : tone === 'bad' ? '#fb7185' : '#e2e8f0';
+  return (
+    <div style={{
+      background: 'linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))',
+      border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 14, padding: '12px 14px',
+    }}>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 19, fontWeight: 700, color, fontFamily: 'ui-monospace, monospace', lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 9.5, color: '#475569', marginTop: 3 }}>{sub}</div>
+    </div>
+  );
+}
+
+function CumulativeChart({ cumulative }) {
+  if (!cumulative || cumulative.length < 2) return null;
+  
+  const width = 720, height = 200;
+  const margin = { left: 50, right: 12, top: 14, bottom: 24 };
+  const chartW = width - margin.left - margin.right;
+  const chartH = height - margin.top - margin.bottom;
+  
+  const cumValues = cumulative.map(c => c.cumulative);
+  const yMin = Math.min(0, Math.min(...cumValues));
+  const yMax = Math.max(0, Math.max(...cumValues));
+  const yPad = (yMax - yMin) * 0.1 || 1000;
+  const yLo = yMin - yPad;
+  const yHi = yMax + yPad;
+  const yRange = yHi - yLo;
+  
+  const xFor = (i) => margin.left + (i / (cumulative.length - 1)) * chartW;
+  const yFor = (v) => margin.top + ((yHi - v) / yRange) * chartH;
+  const yZero = yFor(0);
+  
+  const linePts = cumulative.map((c, i) => `${xFor(i).toFixed(1)},${yFor(c.cumulative).toFixed(1)}`).join(' L ');
+  const areaPath = `M ${xFor(0).toFixed(1)},${yZero.toFixed(1)} L ${linePts} L ${xFor(cumulative.length-1).toFixed(1)},${yZero.toFixed(1)} Z`;
+  const linePath = `M ${linePts}`;
+  
+  const lastVal = cumValues[cumValues.length - 1];
+  const lineColor = lastVal >= 0 ? '#4ade80' : '#fb7185';
+  
+  return (
+    <div className="fade-up" style={{ animationDelay: '0.22s', marginBottom: 22 }}>
+      <div style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.005))',
+        border: '1px solid rgba(255,255,255,0.06)',
+        borderRadius: 14, padding: 14,
+      }}>
+        <div style={{ fontSize: 10, color: '#475569', letterSpacing: 2, marginBottom: 10, fontWeight: 700 }}>
+          📈 累計損益推移
+        </div>
+        <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+          <defs>
+            <linearGradient id="cum-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={lineColor} stopOpacity="0.25" />
+              <stop offset="100%" stopColor={lineColor} stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          {[0, 0.25, 0.5, 0.75, 1].map(i => {
+            const y = margin.top + i * chartH;
+            const v = yHi - i * yRange;
+            return (
+              <g key={i}>
+                <line x1={margin.left} y1={y} x2={margin.left+chartW} y2={y}
+                  stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" strokeDasharray="2,4" />
+                <text x={margin.left-6} y={y} fill="#64748b" fontSize="9.5" textAnchor="end" dominantBaseline="middle"
+                  fontFamily="ui-monospace, monospace">{Math.round(v).toLocaleString()}</text>
+              </g>
+            );
+          })}
+          {/* Zero line */}
+          <line x1={margin.left} y1={yZero} x2={margin.left+chartW} y2={yZero}
+            stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="3,3" />
+          {/* Area + line */}
+          <path d={areaPath} fill="url(#cum-grad)" />
+          <path d={linePath} fill="none" stroke={lineColor} strokeWidth="2" />
+          {/* Date labels (start, mid, end) */}
+          {[0, Math.floor(cumulative.length / 2), cumulative.length - 1].map(i => (
+            <text key={i} x={xFor(i)} y={margin.top + chartH + 14}
+              fill="#64748b" fontSize="9.5" textAnchor="middle" fontFamily="ui-monospace, monospace">
+              {cumulative[i].date.slice(5)}
+            </text>
+          ))}
+          {/* Data points */}
+          {cumulative.map((c, i) => (
+            <circle key={i} cx={xFor(i)} cy={yFor(c.cumulative)} r="3"
+              fill={c.daily >= 0 ? '#4ade80' : '#fb7185'} stroke="#080d18" strokeWidth="1.5" />
+          ))}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
