@@ -124,7 +124,7 @@ function calcBB(closes, period) {
 }
 
 // ═══ CHART ═══════════════════════════════════════════════════════
-function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '09:00', windowEnd = '10:00', targetDate = null }) {
+function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '09:00', windowEnd = '09:30', targetDate = null, yRangeOverride = null }) {
   const [hoverIdx, setHoverIdx] = useState(null);
 
   // Filter candles to window AND target date (for display)
@@ -905,7 +905,7 @@ function App() {
         </div>
 
         <div className="fade-up" style={{ animationDelay: '0.08s', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 22 }}>
-          <KPI label="勝率" value={`${winRate}%`} sub={`${winTrips.length}勝${lossTrips.length}敗`} tone={winRate >= 50 ? 'good' : 'neutral'} />
+          <KPI label="勝率" value={`${winRate}%`} sub={`${winUnits.length}勝${lossUnits.length}敗`} tone={winRate >= 50 ? 'good' : 'neutral'} />
           <KPI label="ペイオフレシオ" value={payoffRatio} sub="勝/負の比" tone="good" />
           <KPI label="平均利益" value={`+${Math.round(avgWin).toLocaleString()}`} sub="円" tone="good" />
           <KPI label="平均損失" value={`−${Math.round(avgLoss).toLocaleString()}`} sub="円" tone="bad" />
