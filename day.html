@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade Review</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { margin: 0; background: #080d18; font-family: 'Hiragino Sans','Noto Sans JP',sans-serif; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-up { animation: fadeUp 0.5s ease-out backwards; }
+  .loading {
+    color: #64748b; text-align: center; padding: 80px 16px;
+    font-family: 'Hiragino Sans','Noto Sans JP',sans-serif;
+  }
+</style>
+</head>
+<body>
+<div id="root"><div class="loading">読み込み中...</div></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ═══ CSV PARSER ═══════════════════════════════════════════════════
+// Supports both 信用決済明細 and 約定履歴 formats
+function parseCSV(text) {
+  // Detect format
+  if (text.includes('信用決済明細') || /^決済日/m.test(text)) {
+    return parseDecisionCSV(text);
+  }
+  return parseExecutionCSV(text);
+}
+
+// 信用決済明細 format - one round-trip per row
+// Actual SBI CSV columns:
+// 0:決済日 1:銘柄 2:銘柄コード 3:決済市場 4:取引 5:期限 6:預り 7:課税
+// 8:建市場 9:建日 10:買/売建 11:決済数量 12:建単価 13:決済単価
+// 14:建代金 15:決済代金 16-25:手数料等 26:受渡日 27:受渡金額/決済損益
+function parseDecisionCSV(text) {
+  const lines = text.split(/\r?\n/);
+  let headerIdx = lines.findIndex(l => l.startsWith('決済日'));
+  if (headerIdx < 0) return [];
+  const trades = [];
+  const tripCounter = {};
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('（')) continue;
+    // Parse CSV with quoted values
+    const cols = [];
+    let cur = '', inQuote = false;
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j];
+      if (ch === '"') { inQuote = !inQuote; }
+      else if (ch === ',' && !inQuote) { cols.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    cols.push(cur);
+    if (cols.length < 28) continue;
+    
+    const date = cols[0].trim();
+    const name = cols[1].trim();
+    const code = cols[2].trim();
+    const side = cols[10].trim();        // 買建 or 売建
+    const qty = cols[11].trim();          // 決済数量
+    const openPrice = cols[12].trim();    // 建単価
+    const closePrice = cols[13].trim();   // 決済単価
+    const pnl = cols[27].trim();          // 受渡金額/決済損益
+    
+    if (!code || !openPrice || !closePrice) continue;
+    const isShort = side.includes('売建');
+    const numQty = parseInt(qty.replace(/,/g, ''));
+    const numOpen = parseFloat(openPrice.replace(/,/g, ''));
+    const numClose = parseFloat(closePrice.replace(/,/g, ''));
+    const numPnl = parseFloat((pnl || '0').replace(/,/g, '').replace(/\+/g, ''));
+    
+    if (isNaN(numOpen) || isNaN(numClose) || isNaN(numQty)) continue;
+    
+    tripCounter[code] = (tripCounter[code] || 0) + 1;
+    const tripId = tripCounter[code] - 1;
+    
+    trades.push({
+      tripId, code, name, qty: numQty,
+      direction: isShort ? 'short' : 'long',
+      openPrice: numOpen, closePrice: numClose,
+      pnl: numPnl, date,
+    });
+  }
+  return trades;
+}
+
+// 約定履歴 format - one execution per row
+function parseExecutionCSV(text) {
+  // Simple fallback - returns empty (the user always uses 信用決済明細)
+  return [];
+}
+
+// ═══ INDICATORS ═══════════════════════════════════════════════════
+function calcMA(closes, period) {
+  return closes.map((_, i) => {
+    if (i < period - 1) return null;
+    const slice = closes.slice(i - period + 1, i + 1);
+    return slice.reduce((s, x) => s + x, 0) / period;
+  });
+}
+
+function calcBB(closes, period) {
+  return closes.map((_, i) => {
+    if (i < period - 1) return null;
+    const slice = closes.slice(i - period + 1, i + 1);
+    const avg = slice.reduce((s, x) => s + x, 0) / period;
+    const sd = Math.sqrt(slice.reduce((s, x) => s + (x - avg) ** 2, 0) / period);
+    return {
+      mid: avg,
+      up1: avg + sd, lo1: avg - sd,
+      up2: avg + 2*sd, lo2: avg - 2*sd,
+      up3: avg + 3*sd, lo3: avg - 3*sd,
+    };
+  });
+}
+
+// ═══ CHART ═══════════════════════════════════════════════════════
+function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '09:00', windowEnd = '10:00', targetDate = null }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  // Filter candles to window AND target date (for display)
+  // But also keep warmup candles (older but same-day or prior days) for BB/MA calculation
+  const { filteredCandles, warmupCount } = useMemo(() => {
+    const startMin = timeToMin(windowStart);
+    const endMin = timeToMin(windowEnd);
+    
+    // Sort all candles by time
+    const sorted = [...candles].sort((a, b) => (a.t || 0) - (b.t || 0));
+    
+    // Find indices of candles that fall in display window
+    const displayIndices = [];
+    sorted.forEach((c, i) => {
+      if (targetDate && candleDateJST(c) !== targetDate) return;
+      const m = candleMinJST(c);
+      if (m >= startMin && m < endMin) displayIndices.push(i);
+    });
+    
+    if (displayIndices.length === 0) return { filteredCandles: [], warmupCount: 0 };
+    
+    // Include up to 25 prior candles as warmup (for BB/MA)
+    const firstDisplayIdx = displayIndices[0];
+    const lastDisplayIdx = displayIndices[displayIndices.length - 1];
+    const warmupStart = Math.max(0, firstDisplayIdx - 25);
+    const sliceWithWarmup = sorted.slice(warmupStart, lastDisplayIdx + 1);
+    const warmupCount = firstDisplayIdx - warmupStart;
+    
+    return { filteredCandles: sliceWithWarmup, warmupCount };
+  }, [candles, windowStart, windowEnd, targetDate]);
+
+  if (filteredCandles.length === 0 || filteredCandles.length === warmupCount) {
+    return (
+      <div style={{ padding: '40px 16px', textAlign: 'center', color: '#475569', fontSize: 12 }}>
+        この時間帯の価格データがありません
+      </div>
+    );
+  }
+
+  // Display only the non-warmup candles
+  const displayCandles = filteredCandles.slice(warmupCount);
+
+  const width = 720;
+  const height = 280;
+  const margin = { left: 50, right: 12, top: 14, bottom: 24 };
+  const chartW = width - margin.left - margin.right;
+  const chartH = height - margin.top - margin.bottom;
+
+  // Use full filteredCandles (with warmup) for indicator calc
+  const closes = filteredCandles.map(c => c.c);
+  const ma5Full = calcMA(closes, 5);
+  const bbFull = calcBB(closes, 25);
+  // Then slice to display range
+  const ma5 = ma5Full.slice(warmupCount);
+  const bb = bbFull.slice(warmupCount);
+
+  const allVals = [];
+  displayCandles.forEach(c => { allVals.push(c.h); allVals.push(c.l); });
+  bb.forEach(b => { if (b) { allVals.push(b.up3); allVals.push(b.lo3); } });
+  ma5.forEach(v => { if (v != null) allVals.push(v); });
+  trades.forEach(t => { allVals.push(t.openPrice); allVals.push(t.closePrice); });
+  
+  const pmin = Math.min(...allVals);
+  const pmax = Math.max(...allVals);
+  const pad = (pmax - pmin) * 0.08;
+  const yMin = pmin - pad;
+  const yMax = pmax + pad;
+  const yRange = yMax - yMin;
+
+  const n = displayCandles.length;
+  const candleW = chartW / n;
+  const bodyW = Math.max(2, candleW * 0.65);
+
+  const xFor = (i) => margin.left + i * candleW + candleW / 2;
+  const yFor = (p) => margin.top + ((yMax - p) / yRange) * chartH;
+  const timeForCandle = (i) => {
+    const m = candleMinJST(displayCandles[i]);
+    return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+  };
+
+  // Find candle index by time string (e.g. "09:06") or by price as fallback
+  const findCandleIdxByTime = (timeStr) => {
+    if (!timeStr) return -1;
+    const [h, m] = timeStr.split(':').map(Number);
+    const targetMin = h * 60 + m;
+    let bestIdx = -1;
+    let bestDiff = Infinity;
+    displayCandles.forEach((c, i) => {
+      const cm = candleMinJST(c);
+      const diff = Math.abs(cm - targetMin);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    });
+    return bestIdx;
+  };
+
+  const findCandleIdxForTrade = (price) => {
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    displayCandles.forEach((c, i) => {
+      let diff;
+      if (c.l <= price && price <= c.h) {
+        diff = 0;
+      } else {
+        diff = Math.min(Math.abs(c.h - price), Math.abs(c.l - price));
+      }
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    });
+    return bestIdx;
+  };
+
+  // Build markers; prefer time-based positioning if openTime/closeTime provided
+  function buildMarkers(trades) {
+    const markers = [];
+    trades.forEach((t, ti) => {
+      const openIdx = t.openTime ? findCandleIdxByTime(t.openTime) : findCandleIdxForTrade(t.openPrice);
+      const closeIdx = t.closeTime ? findCandleIdxByTime(t.closeTime) : findCandleIdxForTrade(t.closePrice);
+      
+      markers.push({
+        idx: openIdx,
+        price: t.openPrice,
+        side: t.direction === 'long' ? 'buy' : 'sell',
+        result: t.pnl >= 0 ? 'win' : 'loss',
+        num: t.displayNum != null ? t.displayNum : t.tripId + 1,
+        type: 'open',
+      });
+      markers.push({
+        idx: closeIdx,
+        price: t.closePrice,
+        side: t.direction === 'long' ? 'sell' : 'buy',
+        result: t.pnl >= 0 ? 'win' : 'loss',
+        num: t.displayNum != null ? t.displayNum : t.tripId + 1,
+        type: 'close',
+      });
+    });
+    return markers;
+  }
+
+  const markers = buildMarkers(trades);
+
+  const bandPath = (upKey, loKey) => {
+    const top = [], bot = [];
+    bb.forEach((b, i) => {
+      if (!b) return;
+      top.push([xFor(i), yFor(b[upKey])]);
+      bot.push([xFor(i), yFor(b[loKey])]);
+    });
+    if (top.length < 2) return '';
+    let d = `M ${top.map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')}`;
+    d += ` L ${bot.reverse().map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')} Z`;
+    return d;
+  };
+
+  const linePath = (values) => {
+    const pts = [];
+    values.forEach((v, i) => { if (v != null) pts.push([xFor(i), yFor(v)]); });
+    if (pts.length < 2) return '';
+    return `M ${pts.map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')}`;
+  };
+
+  const bbLine = (key) => linePath(bb.map(b => b ? b[key] : null));
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+      onMouseLeave={() => setHoverIdx(null)}
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={accent} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={accent} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+
+      {[0,1,2,3,4,5].map(i => {
+        const y = margin.top + (i/5) * chartH;
+        const price = yMax - (i/5) * yRange;
+        return (
+          <g key={`grid-${i}`}>
+            <line x1={margin.left} y1={y} x2={margin.left+chartW} y2={y}
+              stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" strokeDasharray="2,4" />
+            <text x={margin.left-6} y={y} fill="#64748b" fontSize="10"
+              textAnchor="end" dominantBaseline="middle"
+              fontFamily="ui-monospace, monospace">
+              {Math.round(price).toLocaleString()}
+            </text>
+          </g>
+        );
+      })}
+
+      {displayCandles.map((_, i) => {
+        if (i % 5 !== 0 && i !== n - 1) return null;
+        return (
+          <text key={`x-${i}`} x={xFor(i)} y={margin.top+chartH+14}
+            fill="#64748b" fontSize="9.5" textAnchor="middle"
+            fontFamily="ui-monospace, monospace">
+            {timeForCandle(i)}
+          </text>
+        );
+      })}
+
+      <path d={bandPath('up3','lo3')} fill="rgba(248,113,113,0.04)" />
+      <path d={bandPath('up2','lo2')} fill="rgba(74,222,128,0.05)" />
+      <path d={bandPath('up1','lo1')} fill="rgba(134,239,172,0.06)" />
+
+      <path d={bbLine('up3')} fill="none" stroke="#f87171" strokeWidth="0.8" strokeDasharray="2,4" opacity="0.5" />
+      <path d={bbLine('lo3')} fill="none" stroke="#f87171" strokeWidth="0.8" strokeDasharray="2,4" opacity="0.5" />
+      <path d={bbLine('up2')} fill="none" stroke="#4ade80" strokeWidth="0.9" strokeDasharray="3,3" opacity="0.55" />
+      <path d={bbLine('lo2')} fill="none" stroke="#4ade80" strokeWidth="0.9" strokeDasharray="3,3" opacity="0.55" />
+      <path d={bbLine('up1')} fill="none" stroke="#86efac" strokeWidth="1" strokeDasharray="4,2" opacity="0.6" />
+      <path d={bbLine('lo1')} fill="none" stroke="#86efac" strokeWidth="1" strokeDasharray="4,2" opacity="0.6" />
+      <path d={bbLine('mid')} fill="none" stroke="#94a3b8" strokeWidth="1" strokeDasharray="5,2" opacity="0.55" />
+
+      <path d={linePath(ma5)} fill="none" stroke="#facc15" strokeWidth="1.6" opacity="0.85"
+        style={{ filter: 'drop-shadow(0 0 4px rgba(250,204,21,0.3))' }} />
+
+      {markers.map((m, idx) => {
+        if (m.idx >= n) return null;
+        const x = xFor(m.idx);
+        const color = m.result === 'win' ? '#22c55e' : '#ef4444';
+        return (
+          <line key={`ref-${idx}`} x1={x} y1={margin.top} x2={x} y2={margin.top+chartH}
+            stroke={color} strokeWidth="1" strokeDasharray="2,4" opacity="0.3" />
+        );
+      })}
+
+      {displayCandles.map((c, i) => {
+        const x = xFor(i);
+        const isUp = c.c >= c.o;
+        const color = isUp ? '#22c55e' : '#ef4444';
+        const bodyTop = Math.min(yFor(c.o), yFor(c.c));
+        const bodyH = Math.max(1, Math.abs(yFor(c.c) - yFor(c.o)));
+        return (
+          <g key={`c-${i}`}
+            onMouseEnter={() => setHoverIdx(i)}
+            style={{ cursor: 'pointer' }}>
+            <rect x={x - candleW/2} y={margin.top} width={candleW} height={chartH} fill="transparent" />
+            <line x1={x} y1={yFor(c.h)} x2={x} y2={yFor(c.l)} stroke={color} strokeWidth="1" />
+            <rect x={x - bodyW/2} y={bodyTop} width={bodyW} height={bodyH} fill={color} rx="0.5" />
+          </g>
+        );
+      })}
+
+      {markers.map((m, idx) => {
+        if (m.idx >= n) return null;
+        const x = xFor(m.idx);
+        const y = yFor(m.price);
+        const color = m.result === 'win' ? '#22c55e' : '#ef4444';
+        const isBuy = m.side === 'buy';
+        const sym = isBuy ? '▲' : '▼';
+        const offsetY = isBuy ? 22 : -22;
+        const symY = isBuy ? y + offsetY + 5 : y + offsetY - 5;
+        const numY = isBuy ? y + offsetY + 17 : y + offsetY - 17;
+        return (
+          <g key={`m-${idx}`} style={{ pointerEvents: 'none' }}>
+            <line x1={x} y1={y} x2={x} y2={y + offsetY} stroke={color} strokeWidth="1" opacity="0.5" />
+            <text x={x} y={symY} fill={color} fontSize="13" fontWeight="bold" textAnchor="middle">{sym}</text>
+            <circle cx={x} cy={numY} r="8" fill="#080d18" stroke={color} strokeWidth="1.2" />
+            <text x={x} y={numY+1} fill={color} fontSize="10" fontWeight="bold"
+              textAnchor="middle" dominantBaseline="middle"
+              fontFamily="ui-monospace, monospace">{m.num}</text>
+          </g>
+        );
+      })}
+
+      {hoverIdx !== null && displayCandles[hoverIdx] && (() => {
+        const c = displayCandles[hoverIdx];
+        const x = xFor(hoverIdx);
+        const tipX = x > chartW/2 + margin.left ? x - 130 : x + 12;
+        const tipY = margin.top + 8;
+        return (
+          <g style={{ pointerEvents: 'none' }}>
+            <line x1={x} y1={margin.top} x2={x} y2={margin.top+chartH}
+              stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
+            <rect x={tipX} y={tipY} width="118" height="92" rx="6"
+              fill="rgba(10,15,30,0.95)" stroke="#1e293b" strokeWidth="1" />
+            <text x={tipX+8} y={tipY+16} fill="#a78bfa" fontSize="10" fontWeight="bold">{timeForCandle(hoverIdx)}</text>
+            <text x={tipX+8} y={tipY+32} fill="#94a3b8" fontSize="9.5">始値</text>
+            <text x={tipX+110} y={tipY+32} fill="#e2e8f0" fontSize="9.5" textAnchor="end" fontFamily="monospace">{c.o.toLocaleString()}</text>
+            <text x={tipX+8} y={tipY+46} fill="#94a3b8" fontSize="9.5">高値</text>
+            <text x={tipX+110} y={tipY+46} fill="#22c55e" fontSize="9.5" textAnchor="end" fontFamily="monospace">{c.h.toLocaleString()}</text>
+            <text x={tipX+8} y={tipY+60} fill="#94a3b8" fontSize="9.5">安値</text>
+            <text x={tipX+110} y={tipY+60} fill="#ef4444" fontSize="9.5" textAnchor="end" fontFamily="monospace">{c.l.toLocaleString()}</text>
+            <text x={tipX+8} y={tipY+76} fill="#94a3b8" fontSize="9.5">終値</text>
+            <text x={tipX+110} y={tipY+76} fill={c.c >= c.o ? '#22c55e' : '#ef4444'} fontSize="9.5" textAnchor="end" fontFamily="monospace">{c.c.toLocaleString()}</text>
+          </g>
+        );
+      })()}
+    </svg>
+  );
+}
+
+// ═══ HELPERS ════════════════════════════════════════════════════
+function timeToMin(timeStr) {
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function candleMinJST(candle) {
+  if (candle.t == null) return -1;
+  const jst = new Date((candle.t + 9*3600) * 1000);
+  return jst.getUTCHours() * 60 + jst.getUTCMinutes();
+}
+
+// Returns "YYYY-MM-DD" in JST for a candle
+function candleDateJST(candle) {
+  if (candle.t == null) return '';
+  const jst = new Date((candle.t + 9*3600) * 1000);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(jst.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function fmtPnL(n) {
+  if (n == null) return '--';
+  return (n >= 0 ? '+' : '') + Math.round(n).toLocaleString();
+}
+
+// ═══ TRADE GROUPING ═══════════════════════════════════════════════
+// Group trades by stock code, with consolidated stats
+function groupTrades(trades, notesData) {
+  const stockMap = {};
+  trades.forEach(t => {
+    if (!stockMap[t.code]) {
+      stockMap[t.code] = {
+        code: t.code, name: t.name,
+        direction: t.direction,
+        trips: [],
+        totalPnL: 0,
+        totalQty: 0,
+        maxQty: 0,
+      };
+    }
+    // Enrich with notes data if available
+    const tripsConfig = notesData?.trips?.[t.code] || [];
+    const config = tripsConfig[t.tripId] || {};
+    const enriched = {
+      ...t,
+      openTime: config.openTime || null,
+      closeTime: config.closeTime || null,
+      displayNum: config.displayNum != null ? config.displayNum : null,
+      tag: config.tag || null,
+      note: config.note || null,
+    };
+    stockMap[t.code].trips.push(enriched);
+    stockMap[t.code].totalPnL += t.pnl;
+    stockMap[t.code].totalQty += t.qty;
+    stockMap[t.code].maxQty = Math.max(stockMap[t.code].maxQty, t.qty);
+  });
+  // Sort trips within each stock by openTime if all are present
+  Object.values(stockMap).forEach(stock => {
+    if (stock.trips.every(t => t.openTime)) {
+      stock.trips.sort((a, b) => a.openTime.localeCompare(b.openTime));
+    }
+  });
+  return Object.values(stockMap);
+}
+
+// ═══ COMPONENTS ═══════════════════════════════════════════════════
+function KPI({ label, value, sub, tone }) {
+  const color = tone === 'good' ? '#4ade80' : tone === 'bad' ? '#fb7185' : '#e2e8f0';
+  return (
+    <div style={{
+      background: 'linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))',
+      border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 14, padding: '12px 14px',
+    }}>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 19, fontWeight: 700, color, fontFamily: 'ui-monospace, monospace', lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 9.5, color: '#475569', marginTop: 3 }}>{sub}</div>
+    </div>
+  );
+}
+
+function TradeCard({ trip, expanded, onToggle, accent }) {
+  const isWin = trip.pnl >= 0;
+  const color = isWin ? '#4ade80' : '#fb7185';
+  const bgGrad = isWin
+    ? 'linear-gradient(180deg, rgba(74,222,128,0.06), rgba(74,222,128,0.01))'
+    : 'linear-gradient(180deg, rgba(251,113,133,0.06), rgba(251,113,133,0.01))';
+  const borderColor = isWin ? 'rgba(74,222,128,0.18)' : 'rgba(251,113,133,0.18)';
+  const arrow = trip.direction === 'long' ? '買→売' : '売→買';
+  const num = trip.displayNum != null ? trip.displayNum : (trip.tripId + 1);
+  const timeStr = trip.openTime && trip.closeTime ? `${trip.openTime}→${trip.closeTime}` : '';
+  const tripLabel = `${num} ${arrow} ${Math.round(trip.openPrice).toLocaleString()}→${Math.round(trip.closePrice).toLocaleString()} (${trip.qty}株)`;
+
+  return (
+    <div onClick={onToggle}
+      style={{
+        flex: 1, minWidth: 240,
+        background: bgGrad, border: `1px solid ${borderColor}`,
+        borderRadius: 14, padding: '11px 13px', cursor: 'pointer',
+        transition: 'all 0.25s ease',
+        transform: expanded ? 'translateY(-1px)' : 'none',
+      }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, gap: 8 }}>
+        <span style={{ fontSize: 10.5, color: '#94a3b8', lineHeight: 1.4 }}>{tripLabel}</span>
+        {trip.tag && (
+          <span style={{
+            fontSize: 9, color: '#cbd5e1',
+            background: 'rgba(255,255,255,0.06)',
+            padding: '2px 7px', borderRadius: 999,
+            letterSpacing: 0.3, whiteSpace: 'nowrap',
+          }}>{trip.tag}</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <span style={{ fontSize: 17, fontWeight: 700, color, fontFamily: 'ui-monospace, monospace', lineHeight: 1.1 }}>
+          {fmtPnL(trip.pnl)}円
+        </span>
+        {timeStr && (
+          <span style={{ fontSize: 10, color: '#475569', fontFamily: 'ui-monospace, monospace' }}>{timeStr}</span>
+        )}
+      </div>
+      {expanded && trip.note && (
+        <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 8, lineHeight: 1.6 }}>
+          {trip.note}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StockSection({ stock, priceData, accent, gradientId, animDelay, notesData, targetDate }) {
+  const [expandedCards, setExpandedCards] = useState({});
+  const toggle = (key) => setExpandedCards(p => ({ ...p, [key]: !p[key] }));
+  
+  const stockNote = notesData?.stocks?.[stock.code];
+
+  return (
+    <div className="fade-up" style={{ animationDelay: `${animDelay}s`, marginBottom: 22 }}>
+      <div style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.005))',
+        border: '1px solid rgba(255,255,255,0.06)',
+        borderRadius: 18, padding: 16,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+          <div>
+            <span style={{ fontSize: 15, fontWeight: 700, color: accent, letterSpacing: -0.2 }}>{stock.name}</span>
+            <span style={{ fontSize: 10, color: '#475569', marginLeft: 9 }}>
+              {stock.code} ／ {stock.trips.length}回 ／ {stock.direction === 'short' ? 'ショート' : 'ロング'}
+            </span>
+          </div>
+          <span style={{ 
+            fontSize: 16, fontWeight: 700, fontFamily: 'ui-monospace, monospace',
+            color: stock.totalPnL >= 0 ? '#4ade80' : '#fb7185'
+          }}>{fmtPnL(stock.totalPnL)}円</span>
+        </div>
+
+        {priceData ? (
+          <CandlestickChart
+            candles={priceData.candles}
+            trades={stock.trips}
+            accent={accent}
+            gradientId={gradientId}
+            windowStart="09:00"
+            windowEnd="09:30"
+            targetDate={targetDate}
+          />
+        ) : (
+          <div style={{ padding: '40px 16px', textAlign: 'center', color: '#475569', fontSize: 12 }}>
+            価格データを読み込み中...
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+          {stock.trips.map((trip, i) => (
+            <TradeCard
+              key={i} trip={trip}
+              expanded={expandedCards[i]}
+              onToggle={() => toggle(i)}
+              accent={accent}
+            />
+          ))}
+        </div>
+        
+        {stockNote && (
+          <div style={{
+            marginTop: 12,
+            background: 'rgba(96, 165, 250, 0.05)',
+            borderLeft: '3px solid #60a5fa',
+            borderRadius: 8,
+            padding: '10px 12px',
+            fontSize: 12, lineHeight: 1.7, color: '#cbd5e1',
+          }}>
+            <div style={{ fontSize: 10, color: '#60a5fa', marginBottom: 6, fontWeight: 700, letterSpacing: 1 }}>
+              📝 振り返り
+            </div>
+            <div dangerouslySetInnerHTML={{ __html: renderMarkdown(stockNote) }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Minimal markdown renderer
+function renderMarkdown(md) {
+  if (!md) return '';
+  let html = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong style="color:#facc15">$1</strong>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h4 style="font-size:11px;color:#a78bfa;margin:10px 0 4px;letter-spacing:1px;">$1</h4>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h3 style="font-size:13px;color:#60a5fa;margin:10px 0 6px;">$1</h3>');
+  html = html.replace(/^[\-\*]\s+(.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*?<\/li>\n?)+/gs, m => `<ul style="margin:4px 0;padding-left:18px;">${m}</ul>`);
+  const blocks = html.split(/\n\n+/);
+  return blocks.map(b => {
+    const t = b.trim();
+    if (!t) return '';
+    if (/^<(h[1-6]|ul|ol|pre|blockquote)/i.test(t)) return t;
+    return `<p style="margin:6px 0;">${t.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+}
+
+// ═══ MAIN APP ═══════════════════════════════════════════════════
+function App() {
+  const [date, setDate] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('date') || new Date().toISOString().slice(0, 10);
+  });
+  const [trades, setTrades] = useState(null);
+  const [priceMap, setPriceMap] = useState({});
+  const [notesData, setNotesData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        // Load CSV
+        const csvRes = await fetch(`data/${date}.csv`);
+        if (!csvRes.ok) throw new Error(`CSV not found: ${date}`);
+        const csvBlob = await csvRes.arrayBuffer();
+        // Try Shift_JIS first, fallback to UTF-8
+        let csvText;
+        try {
+          csvText = new TextDecoder('shift_jis').decode(csvBlob);
+          if (!csvText.includes('決済日') && !csvText.includes('信用')) {
+            csvText = new TextDecoder('utf-8').decode(csvBlob);
+          }
+        } catch {
+          csvText = new TextDecoder('utf-8').decode(csvBlob);
+        }
+        const parsedTrades = parseCSV(csvText);
+        setTrades(parsedTrades);
+
+        // Load price data for each stock
+        const codes = [...new Set(parsedTrades.map(t => t.code))];
+        const priceResults = await Promise.all(codes.map(async code => {
+          try {
+            const res = await fetch(`data/prices/${date}/${code}.json`);
+            if (!res.ok) return [code, null];
+            return [code, await res.json()];
+          } catch { return [code, null]; }
+        }));
+        const pmap = {};
+        priceResults.forEach(([code, data]) => { if (data) pmap[code] = data; });
+        setPriceMap(pmap);
+
+        // Load notes
+        try {
+          const notesRes = await fetch(`data/notes/${date}.json`);
+          if (notesRes.ok) {
+            setNotesData(await notesRes.json());
+          }
+        } catch {}
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [date]);
+
+  if (loading) {
+    return <div className="loading">読み込み中...<br/><span style={{fontSize:10, color:'#334155'}}>{date}</span></div>;
+  }
+
+  if (error || !trades || trades.length === 0) {
+    return (
+      <div style={{ padding: '40px 16px', textAlign: 'center', color: '#64748b' }}>
+        <div style={{ fontSize: 14, marginBottom: 8 }}>データが見つかりません</div>
+        <div style={{ fontSize: 11, color: '#475569' }}>{error || `${date} の取引データがありません`}</div>
+        <a href="./" style={{ display: 'inline-block', marginTop: 16, color: '#60a5fa', fontSize: 11 }}>← トップに戻る</a>
+      </div>
+    );
+  }
+
+  const stocks = groupTrades(trades, notesData);
+  const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
+  const winTrips = trades.filter(t => t.pnl > 0);
+  const lossTrips = trades.filter(t => t.pnl < 0);
+  const winRate = trades.length > 0 ? Math.round((winTrips.length / trades.length) * 100) : 0;
+  const avgWin = winTrips.length > 0 ? winTrips.reduce((s,t) => s + t.pnl, 0) / winTrips.length : 0;
+  const avgLoss = lossTrips.length > 0 ? Math.abs(lossTrips.reduce((s,t) => s + t.pnl, 0) / lossTrips.length) : 0;
+  const payoffRatio = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : '—';
+
+  const accentColors = ['#60a5fa', '#a78bfa', '#f472b6', '#fbbf24'];
+  
+  // Day of week
+  const dateObj = new Date(date + 'T00:00:00+09:00');
+  const dowJa = ['日','月','火','水','木','金','土'][dateObj.getDay()];
+
+  return (
+    <div style={{
+      background: 'radial-gradient(ellipse at top, #0f1729 0%, #080d18 60%)',
+      minHeight: '100vh',
+      padding: '20px 16px 60px',
+      color: '#e2e8f0',
+    }}>
+      <div style={{ maxWidth: 760, margin: '0 auto' }}>
+        <a href="./" style={{ display: 'inline-block', color: '#475569', textDecoration: 'none', fontSize: 11, marginBottom: 10 }}>← トップに戻る</a>
+
+        <div className="fade-up">
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+            paddingBottom: 14, marginBottom: 20,
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+          }}>
+            <div>
+              <div style={{ fontSize: 9.5, color: '#475569', letterSpacing: 4, marginBottom: 4 }}>TRADE REVIEW</div>
+              <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.3 }}>
+                {date}
+                <span style={{ fontSize: 12, fontWeight: 400, color: '#64748b', marginLeft: 6 }}>{dowJa}</span>
+              </div>
+              <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                信用日計り ／ 1分足 ／ 9:00−9:30
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 9.5, color: '#475569', marginBottom: 4 }}>本日損益</div>
+              <div style={{
+                fontSize: 30, fontWeight: 800,
+                color: totalPnL >= 0 ? '#4ade80' : '#fb7185',
+                fontFamily: 'ui-monospace, monospace', lineHeight: 1, letterSpacing: -0.5,
+                textShadow: totalPnL >= 0 ? '0 0 28px rgba(74,222,128,0.35)' : '0 0 28px rgba(251,113,133,0.35)',
+              }}>{fmtPnL(totalPnL)}<span style={{ fontSize: 13, marginLeft: 3 }}>円</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="fade-up" style={{ animationDelay: '0.08s', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 22 }}>
+          <KPI label="勝率" value={`${winRate}%`} sub={`${winTrips.length}勝${lossTrips.length}敗`} tone={winRate >= 50 ? 'good' : 'neutral'} />
+          <KPI label="ペイオフレシオ" value={payoffRatio} sub="勝/負の比" tone="good" />
+          <KPI label="平均利益" value={`+${Math.round(avgWin).toLocaleString()}`} sub="円" tone="good" />
+          <KPI label="平均損失" value={`−${Math.round(avgLoss).toLocaleString()}`} sub="円" tone="bad" />
+        </div>
+
+        <div className="fade-up" style={{ animationDelay: '0.15s', display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginBottom: 18, paddingLeft: 2 }}>
+          {[
+            { c: '#facc15', dash: false, lbl: '5MA' },
+            { c: '#94a3b8', dash: true, lbl: 'BB中心' },
+            { c: '#86efac', dash: true, lbl: '±1σ' },
+            { c: '#4ade80', dash: true, lbl: '±2σ' },
+            { c: '#f87171', dash: true, lbl: '±3σ' },
+            { c: '#4ade80', dash: false, lbl: '▲▼ 利益' },
+            { c: '#fb7185', dash: false, lbl: '▲▼ 損失' },
+          ].map((it, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <div style={{
+                width: 16, height: 2,
+                background: it.dash ? `repeating-linear-gradient(90deg, ${it.c} 0, ${it.c} 3px, transparent 3px, transparent 6px)` : it.c,
+                borderRadius: 1,
+              }} />
+              <span style={{ fontSize: 9.5, color: '#64748b' }}>{it.lbl}</span>
+            </div>
+          ))}
+        </div>
+
+        {stocks.map((stock, i) => (
+          <StockSection
+            key={stock.code}
+            stock={stock}
+            priceData={priceMap[stock.code]}
+            accent={accentColors[i % accentColors.length]}
+            gradientId={`grad-${stock.code}`}
+            animDelay={0.22 + i * 0.08}
+            notesData={notesData}
+            targetDate={date}
+          />
+        ))}
+
+        {notesData?.overall && (
+          <div className="fade-up" style={{ animationDelay: '0.5s' }}>
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(96,165,250,0.08), rgba(167,139,250,0.05))',
+              border: '1px solid rgba(96,165,250,0.2)',
+              borderRadius: 14, padding: 18, marginTop: 8,
+            }}>
+              <div style={{ fontSize: 10, color: '#475569', letterSpacing: 2, marginBottom: 10, fontWeight: 700 }}>
+                📊 全体総括
+              </div>
+              <div style={{ fontSize: 12, lineHeight: 1.7, color: '#cbd5e1' }}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(notesData.overall) }} />
+            </div>
+          </div>
+        )}
+
+        <div className="fade-up" style={{ animationDelay: '0.6s', marginTop: 20 }}>
+          <details style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1a2235', borderRadius: 8, padding: '8px 12px' }}>
+            <summary style={{ fontSize: 10, color: '#475569', letterSpacing: 1, cursor: 'pointer' }}>
+              📋 約定明細（{trades.length}件）
+            </summary>
+            <table style={{ width: '100%', marginTop: 10, fontSize: 10, color: '#94a3b8', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #1a2235' }}>
+                  <th style={{ textAlign: 'left', padding: '6px 4px', color: '#475569', fontWeight: 'normal' }}>銘柄</th>
+                  <th style={{ textAlign: 'left', padding: '6px 4px', color: '#475569', fontWeight: 'normal' }}>方向</th>
+                  <th style={{ textAlign: 'right', padding: '6px 4px', color: '#475569', fontWeight: 'normal' }}>数量</th>
+                  <th style={{ textAlign: 'right', padding: '6px 4px', color: '#475569', fontWeight: 'normal' }}>建値</th>
+                  <th style={{ textAlign: 'right', padding: '6px 4px', color: '#475569', fontWeight: 'normal' }}>決済</th>
+                  <th style={{ textAlign: 'right', padding: '6px 4px', color: '#475569', fontWeight: 'normal' }}>損益</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.map((t, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: '4px' }}>{t.name}</td>
+                    <td style={{ padding: '4px' }}>{t.direction === 'short' ? '売建' : '買建'}</td>
+                    <td style={{ textAlign: 'right', padding: '4px', fontFamily: 'monospace' }}>{t.qty}</td>
+                    <td style={{ textAlign: 'right', padding: '4px', fontFamily: 'monospace' }}>{Math.round(t.openPrice).toLocaleString()}</td>
+                    <td style={{ textAlign: 'right', padding: '4px', fontFamily: 'monospace' }}>{Math.round(t.closePrice).toLocaleString()}</td>
+                    <td style={{ textAlign: 'right', padding: '4px', fontFamily: 'monospace', color: t.pnl >= 0 ? '#4ade80' : '#fb7185' }}>
+                      {fmtPnL(t.pnl)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
