@@ -377,7 +377,7 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
         style={{ filter: 'drop-shadow(0 0 4px rgba(250,204,21,0.3))' }} />
 
       {markers.map((m, idx) => {
-        if (m.idx >= n) return null;
+        if (m.idx < 0 || m.idx >= n) return null;
         const x = xFor(m.idx);
         const color = m.result === 'win' ? '#22c55e' : '#ef4444';
         return (
@@ -404,7 +404,7 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
       })}
 
       {markers.map((m, idx) => {
-        if (m.idx >= n) return null;
+        if (m.idx < 0 || m.idx >= n) return null;
         const x = xFor(m.idx);
         const y = yFor(m.price);
         const color = m.result === 'win' ? '#22c55e' : '#ef4444';
@@ -631,12 +631,19 @@ function TradeCard({ trip, expanded, onToggle, accent, hideNumber = false }) {
     ? 'linear-gradient(180deg, rgba(74,222,128,0.06), rgba(74,222,128,0.01))'
     : 'linear-gradient(180deg, rgba(251,113,133,0.06), rgba(251,113,133,0.01))';
   const borderColor = isWin ? 'rgba(74,222,128,0.18)' : 'rgba(251,113,133,0.18)';
-  const arrow = trip.direction === 'long' ? '買→売' : '売→買';
+  const openVerb = trip.direction === 'long' ? '買' : '売';
+  const closeVerb = trip.direction === 'long' ? '売' : '買';
   const num = trip.displayNum != null ? trip.displayNum : (trip.tripId + 1);
-  const timeStr = trip.openTime && trip.closeTime ? `${trip.openTime}→${trip.closeTime}` : '';
-  const tripLabel = hideNumber
-    ? `${arrow} ${Math.round(trip.openPrice).toLocaleString()}→${Math.round(trip.closePrice).toLocaleString()} (${trip.qty}株)`
-    : `${num} ${arrow} ${Math.round(trip.openPrice).toLocaleString()}→${Math.round(trip.closePrice).toLocaleString()} (${trip.qty}株)`;
+  const openPriceStr = Math.round(trip.openPrice).toLocaleString();
+  const closePriceStr = Math.round(trip.closePrice).toLocaleString();
+  // Inline time + price: e.g. "12:48売 5,287 → 12:52買 5,262 (200株)"
+  const hasTime = !!(trip.openTime && trip.closeTime);
+  const tradeStr = hasTime
+    ? `${trip.openTime}${openVerb} ${openPriceStr} → ${trip.closeTime}${closeVerb} ${closePriceStr} (${trip.qty}株)`
+    : `${openVerb}→${closeVerb} ${openPriceStr}→${closePriceStr} (${trip.qty}株)`;
+  const tripLabel = hideNumber ? tradeStr : `${num} ${tradeStr}`;
+  // Also keep simple time string for the right-corner area; if inline has time, hide corner string
+  const timeStr = '';
 
   return (
     <div onClick={onToggle}
@@ -702,18 +709,51 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
           }}>{fmtPnL(stock.totalPnL)}円</span>
         </div>
 
-        {priceData ? (
-          <CandlestickChart
-            candles={priceData.candles}
-            trades={stock.trips}
-            accent={accent}
-            gradientId={gradientId}
-            windowStart="09:00"
-            windowEnd="09:30"
-            targetDate={targetDate}
-            yRangeOverride={notesData?.charts?.[stock.code]?.yRange || null}
-          />
-        ) : (
+        {priceData ? (() => {
+          // Resolve chart sessions from notes.
+          // Priority: notes.charts[code].sessions > notes.charts[code] (legacy single) > default
+          const chartCfg = notesData?.charts?.[stock.code];
+          let sessions;
+          if (chartCfg?.sessions && Array.isArray(chartCfg.sessions) && chartCfg.sessions.length > 0) {
+            sessions = chartCfg.sessions;
+          } else {
+            sessions = [{
+              label: null,
+              windowStart: chartCfg?.windowStart || '09:00',
+              windowEnd: chartCfg?.windowEnd || '10:00',
+              yRange: chartCfg?.yRange || null,
+            }];
+          }
+          return sessions.map((sess, si) => {
+            // Filter trades to this session window for marker placement
+            const startMin = timeToMin(sess.windowStart);
+            const endMin = timeToMin(sess.windowEnd);
+            const sessionTrades = stock.trips.filter(t => {
+              if (!t.openTime) return true; // include if no time info
+              const om = timeToMin(t.openTime);
+              return om >= startMin && om < endMin;
+            });
+            return (
+              <div key={si} style={{ marginTop: si > 0 ? 14 : 0 }}>
+                {sess.label && (
+                  <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4, letterSpacing: 1, fontWeight: 600 }}>
+                    {sess.label}
+                  </div>
+                )}
+                <CandlestickChart
+                  candles={priceData.candles}
+                  trades={sessionTrades}
+                  accent={accent}
+                  gradientId={`${gradientId}-${si}`}
+                  windowStart={sess.windowStart}
+                  windowEnd={sess.windowEnd}
+                  targetDate={targetDate}
+                  yRangeOverride={sess.yRange || null}
+                />
+              </div>
+            );
+          });
+        })() : (
           <div style={{ padding: '40px 16px', textAlign: 'center', color: '#475569', fontSize: 12 }}>
             価格データを読み込み中...
           </div>
