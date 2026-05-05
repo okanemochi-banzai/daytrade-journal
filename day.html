@@ -857,13 +857,22 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
                       </div>
                       <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
                         {(() => {
-                          const ot = estimateTime(rt.openOrders);
-                          const ct = estimateTime(rt.closeOrders);
+                          // openTime/closeTime があれば実時刻優先、無ければ補間
+                          const ot = rt.openTime || estimateTime(rt.openOrders);
+                          const ct = rt.closeTime || estimateTime(rt.closeOrders);
                           const otStr = ot ? ` ${ot}` : '';
                           const ctStr = ct ? ` ${ct}` : '';
-                          return `建${rt.openOrders}${otStr} → 決${rt.closeOrders}${ctStr}`;
+                          // 注文番号がない（実時刻ベース）場合は注文番号表示なし
+                          const openLabel = rt.openOrders ? `建${rt.openOrders}${otStr}` : `建${ot || '-'}`;
+                          const closeLabel = rt.closeOrders ? `決${rt.closeOrders}${ctStr}` : `決${ct || '-'}`;
+                          return `${openLabel} → ${closeLabel}`;
                         })()}
                       </div>
+                      {rt.label && (
+                        <div style={{ fontSize: 10, color: '#a78bfa', marginTop: 2, fontWeight: 600 }}>
+                          {rt.label}
+                        </div>
+                      )}
                       {rt.openPrice && rt.closePrice && (
                         <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
                           {rt.openPrice.toLocaleString()} → {rt.closePrice.toLocaleString()}
