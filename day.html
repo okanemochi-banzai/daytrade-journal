@@ -721,6 +721,31 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
   
   const stockNote = notesData?.stocks?.[stock.code];
   const realTrades = notesData?.realTrades?.[stock.code];
+  const timeAnchors = notesData?.timeAnchors;
+  
+  // 注文番号 → 時刻 の線形補間
+  const estimateTime = (ordersStr) => {
+    if (!timeAnchors || timeAnchors.length < 2) return null;
+    if (typeof ordersStr !== 'string') return null;
+    if (ordersStr.indexOf('持越') >= 0 || ordersStr.indexOf('持ち越し') >= 0) return null;
+    const m = ordersStr.match(/(\d{4,})/);
+    if (!m) return null;
+    const n = parseInt(m[1], 10);
+    const a = timeAnchors[0];
+    const b = timeAnchors[1];
+    const toMin = (s) => {
+      const p = s.split(':');
+      return parseInt(p[0],10) * 60 + parseInt(p[1],10);
+    };
+    const nDiff = b.orderNum - a.orderNum;
+    if (nDiff === 0) return null;
+    const tDiff = toMin(b.time) - toMin(a.time);
+    const pos = n - a.orderNum;
+    const t = toMin(a.time) + tDiff * pos / nDiff;
+    const h = Math.floor(t / 60);
+    const mi = Math.round(t % 60);
+    return `${String(h).padStart(2,'0')}:${String(mi).padStart(2,'0')}`;
+  };
 
   return (
     <div className="fade-up" style={{ animationDelay: `${animDelay}s`, marginBottom: 22 }}>
@@ -831,7 +856,13 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
                         )}
                       </div>
                       <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
-                        建{rt.openOrders} → 決{rt.closeOrders}
+                        {(() => {
+                          const ot = estimateTime(rt.openOrders);
+                          const ct = estimateTime(rt.closeOrders);
+                          const otStr = ot ? ` ${ot}` : '';
+                          const ctStr = ct ? ` ${ct}` : '';
+                          return `建${rt.openOrders}${otStr} → 決${rt.closeOrders}${ctStr}`;
+                        })()}
                       </div>
                       {rt.openPrice && rt.closePrice && (
                         <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
