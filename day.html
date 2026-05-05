@@ -262,8 +262,13 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
       realTrades.forEach(rt => {
         if (rt.timeSlot === 'late') return; // 10:00以降は描画しない
         if (rt.openPrice == null || rt.closePrice == null) return;
-        const openIdx = findCandleIdxForTrade(rt.openPrice);
-        const closeIdx = findCandleIdxForTrade(rt.closePrice);
+        // openTime/closeTime があれば時刻ベース、無ければ価格ベース
+        const openIdx = rt.openTime
+          ? findCandleIdxByTime(rt.openTime)
+          : findCandleIdxForTrade(rt.openPrice);
+        const closeIdx = rt.closeTime
+          ? findCandleIdxByTime(rt.closeTime)
+          : findCandleIdxForTrade(rt.closePrice);
         const result = rt.pnl >= 0 ? 'win' : 'loss';
         const dirLong = rt.direction === 'buy';
         markers.push({
