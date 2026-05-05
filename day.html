@@ -124,7 +124,7 @@ function calcBB(closes, period) {
 }
 
 // ═══ CHART ═══════════════════════════════════════════════════════
-function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '09:00', windowEnd = '09:30', targetDate = null, yRangeOverride = null }) {
+function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '09:00', windowEnd = '09:30', targetDate = null, yRangeOverride = null, realTrades = null }) {
   const [hoverIdx, setHoverIdx] = useState(null);
 
   // Filter candles to window AND target date (for display)
@@ -192,6 +192,13 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
     bb.forEach(b => { if (b) { allVals.push(b.up3); allVals.push(b.lo3); } });
     ma5.forEach(v => { if (v != null) allVals.push(v); });
     trades.forEach(t => { allVals.push(t.openPrice); allVals.push(t.closePrice); });
+    if (realTrades) {
+      realTrades.forEach(rt => {
+        if (rt.timeSlot === 'late') return;
+        if (rt.openPrice != null) allVals.push(rt.openPrice);
+        if (rt.closePrice != null) allVals.push(rt.closePrice);
+      });
+    }
     const pmin = Math.min(...allVals);
     const pmax = Math.max(...allVals);
     const pad = (pmax - pmin) * 0.08;
@@ -249,6 +256,31 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
 
   // Build markers: aggregate trades by groupId, show one marker per group at average price
   function buildMarkers(trades) {
+    // realTrades が渡されてれば、それ優先で描画（id順、late非表示）
+    if (realTrades && realTrades.length > 0) {
+      const markers = [];
+      realTrades.forEach(rt => {
+        if (rt.timeSlot === 'late') return; // 10:00以降は描画しない
+        if (rt.openPrice == null || rt.closePrice == null) return;
+        const openIdx = findCandleIdxForTrade(rt.openPrice);
+        const closeIdx = findCandleIdxForTrade(rt.closePrice);
+        const result = rt.pnl >= 0 ? 'win' : 'loss';
+        const dirLong = rt.direction === 'buy';
+        markers.push({
+          idx: openIdx, price: rt.openPrice,
+          side: dirLong ? 'buy' : 'sell',
+          result, num: rt.id, type: 'open',
+        });
+        markers.push({
+          idx: closeIdx, price: rt.closePrice,
+          side: dirLong ? 'sell' : 'buy',
+          result, num: rt.id, type: 'close',
+        });
+      });
+      return markers;
+    }
+    
+    // 従来通り：CSV単位
     const groupMap = {};
     trades.forEach(t => {
       const gid = t.displayNum != null ? t.displayNum : (t.tripId + 1);
@@ -751,6 +783,7 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
                   windowEnd={sess.windowEnd}
                   targetDate={targetDate}
                   yRangeOverride={sess.yRange || null}
+                  realTrades={realTrades}
                 />
               </div>
             );
@@ -770,6 +803,7 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
               {realTrades.map((rt, i) => {
                 const isWin = rt.pnl > 0;
                 const isLose = rt.pnl < 0;
+                const isLate = rt.timeSlot === 'late';
                 const dirLabel = rt.direction === 'buy' ? '買' : '売';
                 const tagStr = rt.tag === 'win' ? ' ✓' : rt.tag === 'loss-key' ? ' ★' : '';
                 const pnlStr = (rt.pnl >= 0 ? '+' : '') + rt.pnl.toLocaleString() + '円';
@@ -779,11 +813,22 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
                     border: '1px solid ' + (isWin ? 'rgba(34, 197, 94, 0.25)' : isLose ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255,255,255,0.08)'),
                     borderRadius: 10, padding: '10px 12px', marginBottom: 6,
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
+                    opacity: isLate ? 0.6 : 1,
                   }}>
                     <div style={{ minWidth: 0, flex: '1 1 auto' }}>
                       <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 600 }}>
                         T{rt.id}{tagStr} <span style={{ color: '#64748b', marginLeft: 4 }}>{dirLabel}</span>
                         <span style={{ color: '#64748b', marginLeft: 6, fontSize: 10 }}>{rt.qty}株</span>
+                        {isLate && (
+                          <span style={{ 
+                            marginLeft: 6, fontSize: 9, padding: '1px 5px',
+                            background: 'rgba(251, 146, 60, 0.15)', 
+                            color: '#fb923c', 
+                            borderRadius: 4, fontWeight: 700,
+                          }}>
+                            🌙10:00以降
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
                         建{rt.openOrders} → 決{rt.closeOrders}
