@@ -832,6 +832,12 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
                 const dirLabel = rt.direction === 'buy' ? '買' : '売';
                 const tagStr = rt.tag === 'win' ? ' ✓' : rt.tag === 'loss-key' ? ' ★' : '';
                 const pnlStr = (rt.pnl >= 0 ? '+' : '') + rt.pnl.toLocaleString() + '円';
+                // 丸囲み数字（1-20: ①-⑳、21+: (21)形式）
+                const circledNum = (n) => {
+                  if (n >= 1 && n <= 20) return String.fromCharCode(0x245F + n);
+                  return `(${n})`;
+                };
+                const numLabel = circledNum(rt.id);
                 return (
                   <div key={i} style={{
                     background: isWin ? 'rgba(34, 197, 94, 0.07)' : isLose ? 'rgba(239, 68, 68, 0.07)' : 'rgba(255,255,255,0.03)',
@@ -842,7 +848,7 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
                   }}>
                     <div style={{ minWidth: 0, flex: '1 1 auto' }}>
                       <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 600 }}>
-                        T{rt.id}{tagStr} <span style={{ color: '#64748b', marginLeft: 4 }}>{dirLabel}</span>
+                        <span style={{ fontSize: 14, marginRight: 4 }}>{numLabel}</span>{tagStr} <span style={{ color: '#64748b', marginLeft: 4 }}>{dirLabel}</span>
                         <span style={{ color: '#64748b', marginLeft: 6, fontSize: 10 }}>{rt.qty}株</span>
                         {isLate && (
                           <span style={{ 
