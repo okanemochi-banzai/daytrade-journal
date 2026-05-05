@@ -17,7 +17,8 @@
         "openPrice": 5232,
         "closePrice": 5257,
         "pnl": 12198,
-        "tag": "win"
+        "tag": "win",
+        "timeSlot": "early"
       },
       {
         "id": 2,
@@ -27,7 +28,8 @@
         "closeOrders": "8880",
         "openPrice": 5443,
         "closePrice": 5444,
-        "pnl": 700
+        "pnl": 700,
+        "timeSlot": "early"
       },
       {
         "id": 3,
@@ -37,7 +39,8 @@
         "closeOrders": "8882",
         "openPrice": 5442,
         "closePrice": 5428,
-        "pnl": -4200
+        "pnl": -4200,
+        "timeSlot": "early"
       },
       {
         "id": 4,
@@ -47,7 +50,8 @@
         "closeOrders": "8884",
         "openPrice": 5416,
         "closePrice": 5444,
-        "pnl": -8400
+        "pnl": -8400,
+        "timeSlot": "early"
       },
       {
         "id": 5,
@@ -58,7 +62,8 @@
         "openPrice": 5450,
         "closePrice": 5401,
         "pnl": -24500,
-        "tag": "loss-key"
+        "tag": "loss-key",
+        "timeSlot": "early"
       },
       {
         "id": 6,
@@ -68,7 +73,8 @@
         "closeOrders": "8888",
         "openPrice": 5384,
         "closePrice": 5380,
-        "pnl": 1600
+        "pnl": 1600,
+        "timeSlot": "early"
       },
       {
         "id": 7,
@@ -79,7 +85,8 @@
         "openPrice": 5369,
         "closePrice": 5433,
         "pnl": 32200,
-        "tag": "win"
+        "tag": "win",
+        "timeSlot": "early"
       },
       {
         "id": 8,
@@ -89,7 +96,8 @@
         "closeOrders": "8908+8909",
         "openPrice": 5372,
         "closePrice": 5375,
-        "pnl": 450
+        "pnl": 450,
+        "timeSlot": "early"
       },
       {
         "id": 9,
@@ -100,7 +108,8 @@
         "openPrice": 5367,
         "closePrice": 5351,
         "pnl": -8050,
-        "tag": "loss-key"
+        "tag": "loss-key",
+        "timeSlot": "late"
       },
       {
         "id": 10,
@@ -111,7 +120,8 @@
         "openPrice": 5388,
         "closePrice": 5375,
         "pnl": -6700,
-        "tag": "loss-key"
+        "tag": "loss-key",
+        "timeSlot": "late"
       },
       {
         "id": 11,
@@ -122,7 +132,8 @@
         "openPrice": 5377,
         "closePrice": 5389,
         "pnl": -6200,
-        "tag": "loss-key"
+        "tag": "loss-key",
+        "timeSlot": "late"
       }
     ],
     "5803": [
@@ -135,7 +146,8 @@
         "openPrice": 5887,
         "closePrice": 5840,
         "pnl": -23400,
-        "tag": "loss-key"
+        "tag": "loss-key",
+        "timeSlot": "early"
       },
       {
         "id": 2,
@@ -145,7 +157,8 @@
         "closeOrders": "8897",
         "openPrice": 5828,
         "closePrice": 5836,
-        "pnl": -3200
+        "pnl": -3200,
+        "timeSlot": "early"
       },
       {
         "id": 3,
@@ -155,7 +168,8 @@
         "closeOrders": "8899",
         "openPrice": 5819,
         "closePrice": 5832,
-        "pnl": -5200
+        "pnl": -5200,
+        "timeSlot": "early"
       },
       {
         "id": 4,
@@ -166,7 +180,8 @@
         "openPrice": 5831,
         "closePrice": 5887,
         "pnl": 28100,
-        "tag": "win"
+        "tag": "win",
+        "timeSlot": "early"
       },
       {
         "id": 5,
@@ -176,7 +191,8 @@
         "closeOrders": "8917",
         "openPrice": 5863,
         "closePrice": 5859,
-        "pnl": 1700
+        "pnl": 1700,
+        "timeSlot": "late"
       }
     ],
     "6857": [
@@ -189,7 +205,8 @@
         "openPrice": 28295,
         "closePrice": 28055,
         "pnl": -24000,
-        "tag": "loss-key"
+        "tag": "loss-key",
+        "timeSlot": "late"
       }
     ],
     "7974": [
@@ -201,7 +218,8 @@
         "closeOrders": "8919",
         "openPrice": 7546,
         "closePrice": 7545,
-        "pnl": 300
+        "pnl": 300,
+        "timeSlot": "late"
       }
     ]
   }
