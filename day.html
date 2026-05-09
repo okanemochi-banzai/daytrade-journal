@@ -194,7 +194,6 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
     trades.forEach(t => { allVals.push(t.openPrice); allVals.push(t.closePrice); });
     if (realTrades) {
       realTrades.forEach(rt => {
-        if (rt.timeSlot === 'late') return;
         if (rt.openPrice != null) allVals.push(rt.openPrice);
         if (rt.closePrice != null) allVals.push(rt.closePrice);
       });
@@ -256,11 +255,10 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
 
   // Build markers: aggregate trades by groupId, show one marker per group at average price
   function buildMarkers(trades) {
-    // realTrades が渡されてれば、それ優先で描画（id順、late非表示）
+    // realTrades が渡されてれば、それ優先で描画（id順、lateは透明度を下げて表示）
     if (realTrades && realTrades.length > 0) {
       const markers = [];
       realTrades.forEach(rt => {
-        if (rt.timeSlot === 'late') return; // 10:00以降は描画しない
         if (rt.openPrice == null || rt.closePrice == null) return;
         // openTime/closeTime があれば時刻ベース、無ければ価格ベース
         const openIdx = rt.openTime
@@ -271,15 +269,16 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
           : findCandleIdxForTrade(rt.closePrice);
         const result = rt.pnl >= 0 ? 'win' : 'loss';
         const dirLong = rt.direction === 'buy';
+        const isLate = rt.timeSlot === 'late';
         markers.push({
           idx: openIdx, price: rt.openPrice,
           side: dirLong ? 'buy' : 'sell',
-          result, num: rt.id, type: 'open',
+          result, num: rt.id, type: 'open', isLate,
         });
         markers.push({
           idx: closeIdx, price: rt.closePrice,
           side: dirLong ? 'sell' : 'buy',
-          result, num: rt.id, type: 'close',
+          result, num: rt.id, type: 'close', isLate,
         });
       });
       return markers;
@@ -417,9 +416,10 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
         if (m.idx < 0 || m.idx >= n) return null;
         const x = xFor(m.idx);
         const color = m.result === 'win' ? '#22c55e' : '#ef4444';
+        const refOpacity = m.isLate ? 0.12 : 0.3;
         return (
           <line key={`ref-${idx}`} x1={x} y1={margin.top} x2={x} y2={margin.top+chartH}
-            stroke={color} strokeWidth="1" strokeDasharray="2,4" opacity="0.3" />
+            stroke={color} strokeWidth="1" strokeDasharray="2,4" opacity={refOpacity} />
         );
       })}
 
@@ -450,8 +450,9 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
         const offsetY = isBuy ? 22 : -22;
         const symY = isBuy ? y + offsetY + 5 : y + offsetY - 5;
         const numY = isBuy ? y + offsetY + 17 : y + offsetY - 17;
+        const groupOpacity = m.isLate ? 0.42 : 1;
         return (
-          <g key={`m-${idx}`} style={{ pointerEvents: 'none' }}>
+          <g key={`m-${idx}`} style={{ pointerEvents: 'none', opacity: groupOpacity }}>
             <line x1={x} y1={y} x2={x} y2={y + offsetY} stroke={color} strokeWidth="1" opacity="0.5" />
             <text x={x} y={symY} fill={color} fontSize="13" fontWeight="bold" textAnchor="middle">{sym}</text>
             <circle cx={x} cy={numY} r="8" fill="#080d18" stroke={color} strokeWidth="1.2" />
@@ -763,7 +764,10 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
           <div style={{ minWidth: 0, flex: '1 1 auto' }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: accent, letterSpacing: -0.2 }}>{stock.name}</div>
             <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
-              {stock.code} ／ {stock.tripGroupCount ? `${stock.trips.length}明細／${stock.tripGroupCount}取引` : `${stock.trips.length}回`} ／ {stock.direction === 'short' ? 'ショート' : 'ロング'}
+              {stock.code} ／ {realTrades && realTrades.length > 0
+                ? `${stock.trips.length}明細／${realTrades.length}取引`
+                : stock.tripGroupCount ? `${stock.trips.length}明細／${stock.tripGroupCount}取引` : `${stock.trips.length}回`
+              } ／ {stock.direction === 'short' ? 'ショート' : 'ロング'}
             </div>
           </div>
           <span style={{ 
@@ -774,8 +778,36 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
         </div>
 
         {priceData ? (() => {
+          // Compute auto window from all trade times (CSV + realTrades)
+          const allTimes = [];
+          stock.trips.forEach(t => {
+            if (t.openTime) allTimes.push(t.openTime);
+            if (t.closeTime) allTimes.push(t.closeTime);
+          });
+          if (realTrades) {
+            realTrades.forEach(rt => {
+              if (rt.openTime) allTimes.push(rt.openTime);
+              if (rt.closeTime) allTimes.push(rt.closeTime);
+            });
+          }
+          let autoWindowStart = '09:00';
+          let autoWindowEnd = '10:00';
+          if (allTimes.length > 0) {
+            const sorted = [...allTimes].sort();
+            const earliest = sorted[0];
+            const latest = sorted[sorted.length - 1];
+            // Latest: round up to next 5-min boundary + 5 min buffer
+            const [lh, lm] = latest.split(':').map(Number);
+            const totalMin = lh * 60 + lm;
+            const roundedEnd = Math.ceil((totalMin + 5) / 5) * 5;
+            const eh = Math.floor(roundedEnd / 60);
+            const em = roundedEnd % 60;
+            autoWindowEnd = `${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}`;
+            // Earliest: 09:00 default, or earlier if needed
+            if (earliest < '09:00') autoWindowStart = earliest;
+          }
           // Resolve chart sessions from notes.
-          // Priority: notes.charts[code].sessions > notes.charts[code] (legacy single) > default
+          // Priority: notes.charts[code].sessions > notes.charts[code] (legacy single) > auto
           const chartCfg = notesData?.charts?.[stock.code];
           let sessions;
           if (chartCfg?.sessions && Array.isArray(chartCfg.sessions) && chartCfg.sessions.length > 0) {
@@ -783,8 +815,8 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
           } else {
             sessions = [{
               label: null,
-              windowStart: chartCfg?.windowStart || '09:00',
-              windowEnd: chartCfg?.windowEnd || '10:00',
+              windowStart: chartCfg?.windowStart || autoWindowStart,
+              windowEnd: chartCfg?.windowEnd || autoWindowEnd,
               yRange: chartCfg?.yRange || null,
             }];
           }
@@ -1047,10 +1079,18 @@ function App() {
   const stocks = groupTrades(trades, notesData);
   const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
   
-  // Use group-level stats if notes provide groups; else fall back to trip-level
+  // Use realTrades from notes JSON (preferred) > group-level stats > trip-level
+  const allRealTrades = stocks.flatMap(s => 
+    notesData?.realTrades?.[s.code] || []
+  );
   const allGroups = stocks.flatMap(s => s.groups || []);
-  const useGroups = allGroups.length > 0 && allGroups.length < trades.length;
-  const baseUnits = useGroups ? allGroups : trades.map(t => ({ totalPnL: t.pnl }));
+  const useRealTrades = allRealTrades.length > 0;
+  const useGroups = !useRealTrades && allGroups.length > 0 && allGroups.length < trades.length;
+  const baseUnits = useRealTrades
+    ? allRealTrades.map(rt => ({ totalPnL: rt.pnl }))
+    : useGroups
+      ? allGroups
+      : trades.map(t => ({ totalPnL: t.pnl }));
   const winUnits = baseUnits.filter(u => (u.totalPnL ?? 0) > 0);
   const lossUnits = baseUnits.filter(u => (u.totalPnL ?? 0) < 0);
   const winRate = baseUnits.length > 0 ? Math.round((winUnits.length / baseUnits.length) * 100) : 0;
@@ -1087,7 +1127,7 @@ function App() {
                 <span style={{ fontSize: 12, fontWeight: 400, color: '#64748b', marginLeft: 6 }}>{dowJa}</span>
               </div>
               <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
-                信用日計り ／ 1分足 ／ 9:00−9:30
+                信用日計り ／ 1分足
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
