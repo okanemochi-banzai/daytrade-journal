@@ -146,10 +146,10 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
     
     if (displayIndices.length === 0) return { filteredCandles: [], warmupCount: 0 };
     
-    // Include up to 25 prior candles as warmup (for BB/MA)
+    // Include up to 75 prior candles as warmup (for MA75)
     const firstDisplayIdx = displayIndices[0];
     const lastDisplayIdx = displayIndices[displayIndices.length - 1];
-    const warmupStart = Math.max(0, firstDisplayIdx - 25);
+    const warmupStart = Math.max(0, firstDisplayIdx - 75);
     const sliceWithWarmup = sorted.slice(warmupStart, lastDisplayIdx + 1);
     const warmupCount = firstDisplayIdx - warmupStart;
     
@@ -176,10 +176,12 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
   // Use full filteredCandles (with warmup) for indicator calc
   const closes = filteredCandles.map(c => c.c);
   const ma5Full = calcMA(closes, 5);
-  const bbFull = calcBB(closes, 25);
+  const ma25Full = calcMA(closes, 25);
+  const ma75Full = calcMA(closes, 75);
   // Then slice to display range
   const ma5 = ma5Full.slice(warmupCount);
-  const bb = bbFull.slice(warmupCount);
+  const ma25 = ma25Full.slice(warmupCount);
+  const ma75 = ma75Full.slice(warmupCount);
 
   // Y-range: if yRangeOverride provided, use it; otherwise auto-compute
   let yMin, yMax;
@@ -189,8 +191,9 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
   } else {
     const allVals = [];
     displayCandles.forEach(c => { allVals.push(c.h); allVals.push(c.l); });
-    bb.forEach(b => { if (b) { allVals.push(b.up3); allVals.push(b.lo3); } });
     ma5.forEach(v => { if (v != null) allVals.push(v); });
+    ma25.forEach(v => { if (v != null) allVals.push(v); });
+    ma75.forEach(v => { if (v != null) allVals.push(v); });
     trades.forEach(t => { allVals.push(t.openPrice); allVals.push(t.closePrice); });
     if (realTrades) {
       realTrades.forEach(rt => {
@@ -337,27 +340,12 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
 
   const markers = buildMarkers(trades);
 
-  const bandPath = (upKey, loKey) => {
-    const top = [], bot = [];
-    bb.forEach((b, i) => {
-      if (!b) return;
-      top.push([xFor(i), yFor(b[upKey])]);
-      bot.push([xFor(i), yFor(b[loKey])]);
-    });
-    if (top.length < 2) return '';
-    let d = `M ${top.map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')}`;
-    d += ` L ${bot.reverse().map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')} Z`;
-    return d;
-  };
-
   const linePath = (values) => {
     const pts = [];
     values.forEach((v, i) => { if (v != null) pts.push([xFor(i), yFor(v)]); });
     if (pts.length < 2) return '';
     return `M ${pts.map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')}`;
   };
-
-  const bbLine = (key) => linePath(bb.map(b => b ? b[key] : null));
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}
@@ -397,18 +385,8 @@ function CandlestickChart({ candles, trades, accent, gradientId, windowStart = '
         );
       })}
 
-      <path d={bandPath('up3','lo3')} fill="rgba(248,113,113,0.04)" />
-      <path d={bandPath('up2','lo2')} fill="rgba(74,222,128,0.05)" />
-      <path d={bandPath('up1','lo1')} fill="rgba(134,239,172,0.06)" />
-
-      <path d={bbLine('up3')} fill="none" stroke="#f87171" strokeWidth="0.8" strokeDasharray="2,4" opacity="0.5" />
-      <path d={bbLine('lo3')} fill="none" stroke="#f87171" strokeWidth="0.8" strokeDasharray="2,4" opacity="0.5" />
-      <path d={bbLine('up2')} fill="none" stroke="#4ade80" strokeWidth="0.9" strokeDasharray="3,3" opacity="0.55" />
-      <path d={bbLine('lo2')} fill="none" stroke="#4ade80" strokeWidth="0.9" strokeDasharray="3,3" opacity="0.55" />
-      <path d={bbLine('up1')} fill="none" stroke="#86efac" strokeWidth="1" strokeDasharray="4,2" opacity="0.6" />
-      <path d={bbLine('lo1')} fill="none" stroke="#86efac" strokeWidth="1" strokeDasharray="4,2" opacity="0.6" />
-      <path d={bbLine('mid')} fill="none" stroke="#94a3b8" strokeWidth="1" strokeDasharray="5,2" opacity="0.55" />
-
+      <path d={linePath(ma75)} fill="none" stroke="#f87171" strokeWidth="1.2" opacity="0.7" />
+      <path d={linePath(ma25)} fill="none" stroke="#60a5fa" strokeWidth="1.4" opacity="0.8" />
       <path d={linePath(ma5)} fill="none" stroke="#facc15" strokeWidth="1.6" opacity="0.85"
         style={{ filter: 'drop-shadow(0 0 4px rgba(250,204,21,0.3))' }} />
 
@@ -1079,6 +1057,7 @@ function App() {
   const stocks = groupTrades(trades, notesData);
   const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
   
+  // Use group-level stats if notes provide groups; else fall back to trip-level
   // Use realTrades from notes JSON (preferred) > group-level stats > trip-level
   const allRealTrades = stocks.flatMap(s => 
     notesData?.realTrades?.[s.code] || []
@@ -1152,10 +1131,8 @@ function App() {
         <div className="fade-up" style={{ animationDelay: '0.15s', display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginBottom: 18, paddingLeft: 2 }}>
           {[
             { c: '#facc15', dash: false, lbl: '5MA' },
-            { c: '#94a3b8', dash: true, lbl: 'BB中心' },
-            { c: '#86efac', dash: true, lbl: '±1σ' },
-            { c: '#4ade80', dash: true, lbl: '±2σ' },
-            { c: '#f87171', dash: true, lbl: '±3σ' },
+            { c: '#60a5fa', dash: false, lbl: '25MA' },
+            { c: '#f87171', dash: false, lbl: '75MA' },
             { c: '#4ade80', dash: false, lbl: '▲▼ 利益' },
             { c: '#fb7185', dash: false, lbl: '▲▼ 損失' },
           ].map((it, i) => (
