@@ -76,7 +76,8 @@ function parseDecisionCSV(text) {
     const numQty = parseInt(qty.replace(/,/g, ''));
     const numOpen = parseFloat(openPrice.replace(/,/g, ''));
     const numClose = parseFloat(closePrice.replace(/,/g, ''));
-    const numPnl = parseFloat((pnl || '0').replace(/,/g, '').replace(/\+/g, ''));
+    let numPnl = parseFloat((pnl || '0').replace(/,/g, '').replace(/\+/g, ''));
+    if (isNaN(numPnl)) numPnl = 0; // "--"（トントン決済など）は損益0として扱う
     
     if (isNaN(numOpen) || isNaN(numClose) || isNaN(numQty)) continue;
     
@@ -828,11 +829,7 @@ function StockSection({ stock, priceData, accent, gradientId, animDelay, notesDa
               </div>
             );
           });
-        })() : (
-          <div style={{ padding: '40px 16px', textAlign: 'center', color: '#475569', fontSize: 12 }}>
-            価格データを読み込み中...
-          </div>
-        )}
+        })() : null}
 
         <div style={{ marginTop: 12 }}>
           {realTrades && realTrades.length > 0 && (
