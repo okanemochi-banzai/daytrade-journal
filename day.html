@@ -1021,9 +1021,12 @@ function App() {
         priceResults.forEach(([code, data]) => { if (data) pmap[code] = data; });
         setPriceMap(pmap);
 
-        // Load notes
+        // Load notes: まず data/{date}.json（同フォルダ・新方式）、無ければ data/notes/{date}.json（旧方式・後方互換）
         try {
-          const notesRes = await fetch(`data/notes/${date}.json`);
+          let notesRes = await fetch(`data/${date}.json`);
+          if (!notesRes.ok) {
+            notesRes = await fetch(`data/notes/${date}.json`);
+          }
           if (notesRes.ok) {
             setNotesData(await notesRes.json());
           }
